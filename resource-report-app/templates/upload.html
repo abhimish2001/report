@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Employee Sheets – Resource Utilization System{% endblock %}
+
+{% block content %}
+<div class="page-container">
+    <div class="page-header">
+        <div class="header-badge">Step 1 of 3: File Ingestion</div>
+        <h1>Upload Employee Task-Tracking Sheets</h1>
+        <p class="header-desc">
+            Select one or more Excel (.xlsx, .xls) or CSV files from your team. Different column layouts, varying header names, and casing differences will be automatically reconciled.
+        </p>
+    </div>
+
+    {% if error_msg %}
+    <div class="alert-box alert-error">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <div>
+            <strong>Upload Error:</strong> {{ error_msg }}
+        </div>
+    </div>
+    {% endif %}
+
+    <form action="/upload" method="post" enctype="multipart/form-data" id="uploadForm">
+        <div class="upload-dropzone" id="dropzone">
+            <div class="dropzone-inner">
+                <div class="dropzone-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                </div>
+                <h3>Drag & Drop Employee Excel or CSV files here</h3>
+                <p>Supports <code>.xlsx</code>, <code>.xls</code>, and <code>.csv</code> sheets with individual schemas</p>
+                <div class="dropzone-btn-row">
+                    <label class="btn btn-primary" for="fileInput">
+                        Browse Files
+                    </label>
+                    <input type="file" id="fileInput" name="files" multiple accept=".xlsx,.xls,.csv" style="display: none;">
+                    <a href="/dashboard" class="btn btn-excel">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+                        View Analytics & KPIs Dashboard
+                    </a>
+                    <a href="/load-demo" class="btn btn-outline">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+                        Reload Reference Dataset
+                    </a>
+                </div>
+                <div id="fileListPreview" class="file-list-preview" style="display: none;"></div>
+            </div>
+        </div>
+
+        <details class="config-accordion" style="margin-bottom: 24px; border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px 16px; background: #ffffff;">
+            <summary style="font-weight: 600; font-size: 14px; cursor: pointer; color: var(--slate-700); display: flex; align-items: center; gap: 8px;">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                Optional Advanced Configuration (Domain Preset, Capacity Thresholds, LLM Key)
+            </summary>
+            <div class="config-grid" style="margin-top: 16px;">
+                <div class="card config-card">
+                    <div class="card-header">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                        <h3>Team Domain & Entity Focus</h3>
+                    </div>
+                    <div class="card-body form-row-group">
+                        <div class="form-group">
+                            <label for="presetSelect">Industry / Team Profile Preset</label>
+                            <select id="presetSelect" name="team_preset" class="form-control" onchange="onPresetChange(this.value)">
+                                <option value="universal" selected>Universal / Adaptive (Any Team)</option>
+                                <option value="software">Software Engineering & Product Development</option>
+                                <option value="consulting">Client Agency & Consulting Services</option>
+                                <option value="education">Higher Education & Services (Ref Dataset)</option>
+                                <option value="it_ops">IT Operations & Service Helpdesk</option>
+                            </select>
+                            <small class="form-hint">Adapts column matching heuristics, entity terms, and executive narrative tone.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="entityInput">Primary Grouping Entity Label</label>
+                            <input type="text" id="entityInput" name="entity_label" value="Service" placeholder="e.g. Project, Client, Department, University, Service" class="form-control">
+                            <small class="form-hint">Label used across dashboard, Excel sheets, and PDF (e.g., 'Project', 'Client', 'University').</small>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card config-card">
+                    <div class="card-header">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                        <h3>Capacity & Variance Thresholds</h3>
+                    </div>
+                    <div class="card-body form-row-group">
+                        <div class="form-group">
+                            <label for="thresholdInput">Overload Utilization Threshold (%)</label>
+                            <input type="number" id="thresholdInput" name="overload_threshold" value="110" min="100" max="200" step="5" class="form-control">
+                            <small class="form-hint">Staff/accounts exceeding this % of expected capacity are flagged for governance review.</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="capacityInput">Fixed Capacity Baseline (Hours / Person, Optional)</label>
+                            <input type="number" id="capacityInput" name="nominal_capacity" placeholder="Leave empty to use Expected Hours sum" class="form-control">
+                            <small class="form-hint">E.g., 160 hrs/month (40 hrs/wk). If left blank, each person's expected hours sum is used.</small>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card config-card" style="grid-column: 1 / -1;">
+                    <div class="card-header">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 14.5a2.5 2.5 0 1 1 2.5-2.5 2.5 2.5 0 0 1-2.5 2.5zm0-7a2.5 2.5 0 1 1 2.5-2.5 2.5 2.5 0 0 1-2.5 2.5z"/></svg>
+                        <h3>AI Executive Insights (Google Gemini Free Tier)</h3>
+                    </div>
+                    <div class="card-body form-row-group">
+                        <div class="form-group">
+                            <label for="keyInput">Google Gemini API Key</label>
+                            <input type="password" id="keyInput" name="llm_api_key" value="AIzaSyB0oFRGrHDg8fJgTwJIiavfialaSp7yMao" placeholder="Enter Gemini API key" class="form-control">
+                            <small class="form-hint">Using Google Gemini Free Tier API key.</small>
+                        </div>
+                        <div class="form-row-dual">
+                            <div class="form-group">
+                                <label for="modelInput">Gemini Model</label>
+                                <input type="text" id="modelInput" name="llm_model" value="gemini-3.6-flash" class="form-control">
+                            </div>
+                            <div class="form-group">
+                                <label for="urlInput">Base API URL</label>
+                                <input type="text" id="urlInput" name="llm_base_url" value="https://generativelanguage.googleapis.com/v1beta/openai" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </details>
+
+        <div class="form-submit-row">
+            <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">
+                Proceed to Normalization Review & Confirmation
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    const fileInput = document.getElementById('fileInput');
+    const dropzone = document.getElementById('dropzone');
+    const previewArea = document.getElementById('fileListPreview');
+
+    fileInput.addEventListener('change', updateFileList);
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropzone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropzone.classList.add('drag-active');
+        }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropzone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropzone.classList.remove('drag-active');
+        }, false);
+    });
+
+    dropzone.addEventListener('drop', (e) => {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+        if (files.length > 0) {
+            fileInput.files = files;
+            updateFileList();
+        }
+    });
+
+    function onPresetChange(val) {
+        const entityInput = document.getElementById('entityInput');
+        if (!entityInput) return;
+        if (val === 'software') {
+            entityInput.value = 'Project';
+        } else if (val === 'consulting') {
+            entityInput.value = 'Client Account';
+        } else if (val === 'education') {
+            entityInput.value = 'University';
+        } else if (val === 'it_ops') {
+            entityInput.value = 'Service Queue';
+        } else {
+            entityInput.value = 'Service';
+        }
+    }
+
+    function updateFileList() {
+        const files = fileInput.files;
+        if (!files || files.length === 0) {
+            previewArea.style.display = 'none';
+            return;
+        }
+
+        previewArea.style.display = 'block';
+        let html = `
+            <div class="d-flex justify-between align-center mb-2">
+                <span class="preview-title" style="font-weight: 600; font-size: 13.5px;">Selected ${files.length} file(s) for consolidation:</span>
+                <button type="button" class="btn btn-sm btn-outline" style="padding: 2px 8px; font-size: 11px;" onclick="clearSelectedFiles()">Clear Selection</button>
+            </div>
+            <ul class="file-badges">
+        `;
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            const sizeKb = Math.round(f.size / 1024);
+            html += `<li><strong>${f.name}</strong> <span class="badge badge-light">${sizeKb} KB</span></li>`;
+        }
+        html += '</ul>';
+        previewArea.innerHTML = html;
+    }
+
+    function clearSelectedFiles() {
+        fileInput.value = '';
+        updateFileList();
+        showToast('Selected files cleared.', 'info');
+    }
+
+    const uploadForm = document.getElementById('uploadForm');
+    const submitBtn = document.getElementById('submitBtn');
+
+    if (uploadForm) {
+        uploadForm.addEventListener('submit', (e) => {
+            const files = fileInput.files;
+            if (!files || files.length === 0) {
+                e.preventDefault();
+                showToast('Please select at least one .xlsx or .csv file to proceed.', 'warning');
+                return false;
+            }
+
+            for (let i = 0; i < files.length; i++) {
+                if (files[i].size > 50 * 1024 * 1024) {
+                    e.preventDefault();
+                    showToast(`File "${files[i].name}" exceeds maximum allowed 50MB size.`, 'error');
+                    return false;
+                }
+            }
+
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = `
+                    <span style="display: inline-flex; align-items: center; gap: 8px;">
+                        <span class="loading-spinner" style="width: 16px; height: 16px; border-width: 2px; margin: 0; display: inline-block;"></span>
+                        Ingesting & Processing...
+                    </span>
+                `;
+            }
+            showLoading('Ingesting Team Files...', 'Reading task rows, matching schema columns, and normalizing entities.');
+        });
+    }
+</script>
+{% endblock %}

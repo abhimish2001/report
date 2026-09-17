@@ -1,0 +1,319 @@
+{% extends "base.html" %}
+
+{% block title %}Historical Reports & Multi-Period Trends{% endblock %}
+
+{% block content %}
+<div class="page-container">
+    <div class="dash-header">
+        <div class="dash-title-group">
+            <div class="dash-badge-row">
+                <span class="badge badge-primary">Multi-Period Intelligence</span>
+                <span class="badge badge-neutral">{{ reports|length }} Consolidated Reports</span>
+            </div>
+            <h1 class="dash-title">Historical Reports & Trends Archive</h1>
+            <p class="dash-subtitle">Track longitudinal resource utilization, capacity overruns, and delivery velocity across reporting cycles.</p>
+        </div>
+        <div class="dash-export-group">
+            <a href="/upload" class="btn btn-primary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Upload New Report
+            </a>
+            <form action="/reset-db" method="post" onsubmit="return confirm('Are you sure you want to clear all historical reports and tasks from the database?');" style="display:inline;">
+                <button type="submit" class="btn btn-outline" style="color: #dc2626; border-color: #fecaca;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    Clear Database
+                </button>
+            </form>
+        </div>
+    </div>
+
+    {% if reports|length == 0 %}
+    <div class="card p-5 text-center" style="max-width: 600px; margin: 40px auto;">
+        <div style="width: 56px; height: 56px; border-radius: 50%; background: var(--slate-100); color: var(--slate-600); display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </div>
+        <h3 style="font-size: 18px; font-weight: 700; margin-bottom: 8px;">No Historical Reports Found</h3>
+        <p class="text-muted mb-4">Your local SQLite database is currently empty. Upload team sheets or load the reference dataset to start analyzing trends.</p>
+        <div class="d-flex justify-center gap-3">
+            <a href="/upload" class="btn btn-primary">Upload Team Sheets</a>
+            <a href="/load-demo" class="btn btn-outline">Load August 2026 Reference</a>
+        </div>
+    </div>
+    {% else %}
+
+    <!-- Historical KPI Strip -->
+    {% set ns = namespace(tot_tasks=0, tot_exp=0.0, tot_act=0.0, tot_util_sum=0.0) %}
+    {% for r in reports %}
+        {% set ns.tot_tasks = ns.tot_tasks + (r.totals.tasks or 0) %}
+        {% set ns.tot_exp = ns.tot_exp + (r.totals.expected_hrs or 0.0) %}
+        {% set ns.tot_act = ns.tot_act + (r.totals.actual_hrs or 0.0) %}
+        {% set ns.tot_util_sum = ns.tot_util_sum + (r.totals.utilization_pct or 0.0) %}
+    {% endfor %}
+    {% set avg_util = (ns.tot_util_sum / reports|length)|round(1) %}
+    {% set net_var = (ns.tot_act - ns.tot_exp)|round(1) %}
+
+    <div class="kpi-grid mb-4">
+        <div class="kpi-card">
+            <div class="kpi-label">Archived Reports</div>
+            <div class="kpi-value">{{ reports|length }}</div>
+            <div class="kpi-meta text-muted">Active audit periods</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Cumulative Tasks</div>
+            <div class="kpi-value">{{ ns.tot_tasks }}</div>
+            <div class="kpi-meta text-muted">Delivered across all cycles</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Cumulative Actual Effort</div>
+            <div class="kpi-value">{{ ns.tot_act|round(1) }} <span class="kpi-unit">hrs</span></div>
+            <div class="kpi-meta text-muted">Baseline: {{ ns.tot_exp|round(1) }} hrs</div>
+        </div>
+        <div class="kpi-card {% if net_var > 0 %}kpi-alert{% else %}kpi-success{% endif %}">
+            <div class="kpi-label">Net Cumulative Variance</div>
+            <div class="kpi-value">{% if net_var > 0 %}+{% endif %}{{ net_var }} <span class="kpi-unit">hrs</span></div>
+            <div class="kpi-meta">
+                {% if net_var > 0 %}
+                <span class="badge badge-warning">Overall Overrun</span>
+                {% else %}
+                <span class="badge badge-success">Overall Under Budget</span>
+                {% endif %}
+            </div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Average Utilization</div>
+            <div class="kpi-value">{{ avg_util }}<span class="kpi-unit">%</span></div>
+            <div class="kpi-meta text-muted">Historical mean utilization</div>
+        </div>
+    </div>
+
+    <!-- Multi-Period Trend Visualizations -->
+    <div class="charts-grid mb-4">
+        <div class="chart-card">
+            <div class="chart-header">
+                <h3>Planned vs Actual Hours Across Reporting Cycles</h3>
+            </div>
+            <div class="chart-body" style="height: 280px;">
+                <canvas id="hoursTrendChart"></canvas>
+            </div>
+        </div>
+        <div class="chart-card">
+            <div class="chart-header">
+                <h3>Team Utilization Rate (%) Over Time</h3>
+            </div>
+            <div class="chart-body" style="height: 280px;">
+                <canvas id="utilTrendChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Archived Reports Ledger Table -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-between align-center" style="flex-wrap: wrap; gap: 12px;">
+            <div class="d-flex align-center gap-2">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                <h3>Archived Reports Ledger</h3>
+            </div>
+            <div class="d-flex align-center gap-2">
+                <input type="text" id="trendsSearchInput" class="form-control form-control-sm" placeholder="Search reports..." oninput="filterTrendsTable(this.value)" style="width: 200px;">
+                <button type="button" class="btn btn-sm btn-outline" onclick="exportTableToCSV('trendsTable', 'Historical_Reports_Ledger.csv')">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    CSV
+                </button>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="data-table" id="trendsTable">
+                    <thead>
+                        <tr>
+                            <th>Report ID</th>
+                            <th>Reporting Period</th>
+                            <th>Entity Focus</th>
+                            <th class="text-right">Total Tasks</th>
+                            <th class="text-right">Planned (h)</th>
+                            <th class="text-right">Actual (h)</th>
+                            <th class="text-right">Variance</th>
+                            <th class="text-right">Utilization</th>
+                            <th>Generated At</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in reports %}
+                        <tr>
+                            <td><strong>#{{ r.id }}</strong></td>
+                            <td>
+                                <strong>{{ r.month_label or r.period_label }}</strong>
+                                <div class="text-muted text-small">{{ r.period_label }}</div>
+                            </td>
+                            <td><span class="badge badge-field">{{ r.entity_label }}</span></td>
+                            <td class="text-right">{{ r.totals.tasks }}</td>
+                            <td class="text-right">{{ r.totals.expected_hrs|round(1) }}</td>
+                            <td class="text-right">{{ r.totals.actual_hrs|round(1) }}</td>
+                            <td class="text-right {% if r.totals.variance > 0 %}text-danger font-bold{% else %}text-success{% endif %}">
+                                {% if r.totals.variance > 0 %}+{% endif %}{{ r.totals.variance|round(1) }}
+                            </td>
+                            <td class="text-right">
+                                <span class="badge {% if r.totals.utilization_pct >= 110 %}badge-danger{% elif r.totals.utilization_pct >= 95 %}badge-info{% else %}badge-light{% endif %}">
+                                    {{ r.totals.utilization_pct }}%
+                                </span>
+                            </td>
+                            <td class="text-muted text-small">{{ r.generated_at }}</td>
+                            <td>
+                                <div class="d-flex gap-2">
+                                    <a href="/dashboard?report_id={{ r.id }}" class="btn btn-outline btn-sm" title="View Dashboard">
+                                        View
+                                    </a>
+                                    <a href="/export/excel/{{ r.id }}" class="btn btn-excel btn-sm" title="Download Excel" onclick="showToast('Downloading Excel report #{{ r.id }}...', 'info')">
+                                        XLSX
+                                    </a>
+                                    <a href="/export/pdf/{{ r.id }}" class="btn btn-pdf btn-sm" title="Download PDF" onclick="showToast('Downloading PDF report #{{ r.id }}...', 'info')">
+                                        PDF
+                                    </a>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    const rawReports = {{ reports | tojson | safe }};
+    // Chronological order (oldest to newest) for line charts
+    const chronologicalReports = [...rawReports].reverse();
+
+    function getGridColor() {
+        return document.documentElement.getAttribute('data-theme') === 'dark' ? '#1f293d' : '#f1f5f9';
+    }
+    function getTextColor() {
+        return document.documentElement.getAttribute('data-theme') === 'dark' ? '#94a3b8' : '#475569';
+    }
+
+    if (chronologicalReports.length > 0) {
+        const labels = chronologicalReports.map(r => `#${r.id} (${r.month_label || r.period_label || 'Cycle'})`);
+        const expHours = chronologicalReports.map(r => r.totals?.expected_hrs || 0);
+        const actHours = chronologicalReports.map(r => r.totals?.actual_hrs || 0);
+        const utilPcts = chronologicalReports.map(r => r.totals?.utilization_pct || 0);
+
+        // Hours Trend Chart
+        const ctxHours = document.getElementById('hoursTrendChart');
+        if (ctxHours) {
+            new Chart(ctxHours, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Planned Expected (hrs)',
+                            data: expHours,
+                            backgroundColor: '#94a3b8',
+                            borderRadius: 4
+                        },
+                        {
+                            label: 'Actual Effort (hrs)',
+                            data: actHours,
+                            backgroundColor: '#2563eb',
+                            borderRadius: 4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'top', labels: { boxWidth: 12, font: { family: 'Inter', size: 11 }, color: getTextColor() } }
+                    },
+                    scales: {
+                        y: { grid: { color: getGridColor() }, ticks: { color: getTextColor() }, title: { display: true, text: 'Hours', color: getTextColor() } },
+                        x: { grid: { display: false }, ticks: { color: getTextColor() } }
+                    }
+                }
+            });
+        }
+
+        // Utilization Trend Chart
+        const ctxUtil = document.getElementById('utilTrendChart');
+        if (ctxUtil) {
+            new Chart(ctxUtil, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Utilization Rate (%)',
+                        data: utilPcts,
+                        borderColor: '#0ea5e9',
+                        backgroundColor: 'rgba(14, 165, 233, 0.1)',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 5,
+                        pointHoverRadius: 7
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'top', labels: { boxWidth: 12, font: { family: 'Inter', size: 11 }, color: getTextColor() } }
+                    },
+                    scales: {
+                        y: { 
+                            grid: { color: getGridColor() }, 
+                            ticks: { color: getTextColor() }, 
+                            title: { display: true, text: 'Utilization %', color: getTextColor() },
+                            suggestedMin: 80,
+                            suggestedMax: 130
+                        },
+                        x: { grid: { display: false }, ticks: { color: getTextColor() } }
+                    }
+                }
+            });
+        }
+    }
+
+    function filterTrendsTable(query) {
+        const q = (query || '').toLowerCase().trim();
+        const tbody = document.querySelector('#trendsTable tbody');
+        if (!tbody) return;
+        const rows = tbody.querySelectorAll('tr');
+        rows.forEach(r => {
+            const text = r.innerText.toLowerCase();
+            r.style.display = (!q || text.includes(q)) ? '' : 'none';
+        });
+    }
+
+    function exportTableToCSV(tableId, filename) {
+        const table = document.getElementById(tableId);
+        if (!table) return;
+        const csv = [];
+        const rows = table.querySelectorAll('tr');
+        rows.forEach(row => {
+            if (row.style.display === 'none') return;
+            const cols = row.querySelectorAll('th, td');
+            const rowData = [];
+            cols.forEach(col => {
+                let text = col.innerText.replace(/"/g, '""').trim();
+                text = text.replace(/[▲▼⇅]/g, '').trim();
+                rowData.push(`"${text}"`);
+            });
+            csv.push(rowData.join(','));
+        });
+        const blob = new Blob([csv.join('\n')], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.setAttribute('download', filename || 'Reports_Archive.csv');
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        if (typeof showToast === 'function') {
+            showToast('Archived reports ledger exported to CSV.', 'success');
+        }
+    }
+</script>
+{% endblock %}

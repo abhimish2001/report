@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}{{ error_title or "Error" }} – Resource Utilization System{% endblock %}
+
+{% block content %}
+<div class="page-container" style="max-width: 680px; margin: 60px auto; text-align: center;">
+    <div class="card p-5" style="border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);">
+        <div style="width: 64px; height: 64px; border-radius: 50%; background: {% if status_code == 404 %}var(--primary-light){% else %}var(--danger-light){% endif %}; color: {% if status_code == 404 %}var(--primary){% else %}var(--danger){% endif %}; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px;">
+            {% if status_code == 404 %}
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M16 16s-1.5-2-4-2-4 2-4 2"/>
+                <line x1="9" y1="9" x2="9.01" y2="9"/>
+                <line x1="15" y1="9" x2="15.01" y2="9"/>
+            </svg>
+            {% else %}
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            {% endif %}
+        </div>
+
+        <span class="badge {% if status_code == 404 %}badge-info{% else %}badge-danger{% endif %}" style="font-size: 13px; margin-bottom: 12px;">
+            HTTP {{ status_code or 500 }}
+        </span>
+
+        <h1 style="font-size: 24px; font-weight: 800; color: var(--dark); margin-bottom: 8px;">
+            {{ error_title or "An unexpected issue occurred" }}
+        </h1>
+
+        <p class="text-muted mb-4" style="font-size: 14px; line-height: 1.6;">
+            {{ error_message or "We were unable to complete your request. Please check the URL or return to the main dashboard." }}
+        </p>
+
+        <div class="d-flex justify-center gap-3" style="flex-wrap: wrap;">
+            <a href="/dashboard" class="btn btn-primary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+                Return to Dashboard
+            </a>
+            <a href="/upload" class="btn btn-outline">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                Upload Files
+            </a>
+            <a href="/trends" class="btn btn-outline">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+                Archive History
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}
