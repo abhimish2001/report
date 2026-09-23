@@ -87,7 +87,8 @@ def get_team_presets() -> Dict[str, Dict[str, Any]]:
 # Extensive alias catalog based on empirical team tracking formats
 COLUMN_ALIASES: Dict[str, List[str]] = {
     "Date": [
-        "date", "task date", "entry date", "work date", "dt", "day", "log date", "dated"
+        "date", "task date", "entry date", "work date", "dt", "day", "log date", "dated",
+        "activity date"
     ],
     "Service": [
         "service", "university", "service / university", "service/university",
@@ -134,7 +135,8 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
         "start date", "start", "start time", "started on", "begin date", "commenced"
     ],
     "End Date": [
-        "end date", "end", "end time", "completed on", "finish date", "closed on"
+        "end date", "end", "end time", "completed on", "finish date", "closed on",
+        "completion date"
     ]
 }
 
@@ -296,4 +298,23 @@ def map_dataframe_to_schema(
                     warnings.append(f"Required field '{canon}' could not be matched to any source column.")
 
     result_df = pd.DataFrame(unified_data, columns=CANONICAL_COLUMNS)
+
+    # Preserve any source columns that didn't map to the canonical schema
+    # instead of silently dropping them. Downstream code only ever reads
+    # columns by their canonical name, so an extra column just rides along
+    # unused unless something later wants it - but the data isn't lost.
+    consumed_raws = {raw for raw in final_mapping.values() if raw}
+    extra_columns = [c for c in df.columns if c not in consumed_raws]
+    if extra_columns:
+        for raw_col in extra_columns:
+            # Guard against a leftover raw column sharing a name with a
+            # canonical field (e.g. an explicit_mapping override left the
+            # raw "Priority" column unconsumed) - never overwrite it.
+            out_name = raw_col if raw_col not in result_df.columns else f"{raw_col} (unmapped)"
+            result_df[out_name] = df[raw_col].values
+        warnings.append(
+            f"{len(extra_columns)} unmatched source column(s) preserved as-is: "
+            f"{', '.join(extra_columns)}."
+        )
+
     return result_df, final_mapping, warnings
