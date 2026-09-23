@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment / secrets
+.env
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Generated data & uploads
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/tmp_uploads/
+
+# Generated reports
+output/
+
+# Editor/OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

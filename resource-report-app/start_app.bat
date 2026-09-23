@@ -4,7 +4,7 @@ echo ======================================================================
 echo Starting Team Resource Utilization Reporting System...
 echo ======================================================================
 echo.
-echo Initializing local environment and SQLite database...
+echo Initializing environment and database connection...
 cd /d "%~dp0"
 
 echo Opening browser at http://localhost:8000 ...
@@ -12,7 +12,13 @@ timeout /t 2 /nobreak >nul
 start "" http://localhost:8000
 
 echo Starting backend application server...
-python app.py
+where python >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    python app.py
+) else (
+    py app.py
+)
+
 if %ERRORLEVEL% NEQ 0 (
     echo.
     echo [ERROR] Application encountered an issue during startup.

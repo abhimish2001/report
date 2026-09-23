@@ -1,1387 +1,906 @@
 {% extends "base.html" %}
 
-{% block title %}Resource Utilization Dashboard – {{ aggregates.month_label }}{% endblock %}
+{% block title %}Resource Utilization Report – {{ aggregates.month_label }}{% endblock %}
 
-{% block content %}
-<div class="dashboard-wrapper">
-    <!-- Top Action Bar -->
-    <div class="dash-header">
-        <div class="dash-title-group">
-            <div class="dash-badge-row">
-                <span class="badge badge-primary">{{ aggregates.month_label }}</span>
-                <span class="badge badge-neutral">{{ aggregates.period_label }}</span>
-                <span class="badge badge-success">Consolidated from {{ files_count }} source file(s)</span>
-            </div>
-            <h1 class="dash-title">Team Resource Utilization Report</h1>
-            <p class="dash-subtitle">Consolidated operational metrics, capacity variance analysis, and governance highlights.</p>
-        </div>
-        <div class="dash-export-group">
-            <a href="/export/excel/{{ report_id }}" class="btn btn-excel" onclick="showToast('Preparing 4-Sheet Excel workbook download...', 'info')">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-                Export 4-Sheet Excel (.xlsx)
-            </a>
-            <a href="/export/pdf/{{ report_id }}" class="btn btn-pdf" onclick="showToast('Generating executive PDF report...', 'info')">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-                Export Executive PDF (.pdf)
-            </a>
-            <a href="/" class="btn btn-outline">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
-                New Upload
-            </a>
-        </div>
-    </div>
+{% block extra_head %}
+<style>
+    /* Executive Palette & Layout inspired by Sample-1 & Sample-2 */
+    .exec-container {
+        max-width: 1400px;
+        margin: 24px auto 60px;
+        background: #ffffff;
+        border-radius: 28px;
+        box-shadow: 0 20px 45px -10px rgba(15, 23, 42, 0.08);
+        padding: 36px 44px 50px;
+        border: 1px solid #e2e8f0;
+    }
 
-    <!-- Timeframe Slicer & Global Command Bar -->
-    <div class="slicer-container">
-        <div class="slicer-pill-group">
-            <span class="slicer-label">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                Timeframe:
-            </span>
-            <button type="button" class="slicer-btn active" id="btnWeek_all" onclick="selectWeek('all')">Full Month (All Weeks)</button>
-            {% for w in aggregates.ordered_weeks %}
-            <button type="button" class="slicer-btn" id="btnWeek_{{ loop.index }}" onclick="selectWeek('{{ w }}')">{{ w }}</button>
-            {% endfor %}
-        </div>
-        <div class="global-search-box">
-            <svg class="search-icon-left" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input type="text" id="globalSearchInput" class="global-search-input" placeholder="Search tasks, people, services..." oninput="onGlobalSearch(this.value)">
-            <span class="search-kbd-hint">Ctrl + K</span>
-        </div>
-    </div>
+    /* Header */
+    .exec-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        border-bottom: 2px solid #edf2f7;
+        padding-bottom: 20px;
+        margin-bottom: 28px;
+        flex-wrap: wrap;
+        gap: 16px;
+    }
 
-    <!-- Executive KPI Grid -->
-    <div class="kpi-grid">
-        <div class="kpi-card">
-            <div class="kpi-label">Total Tasks Delivered</div>
-            <div class="kpi-value" id="kpiTasksVal">{{ aggregates.totals.tasks }}</div>
-            <div class="kpi-meta text-muted" id="kpiTasksSub">Across {{ aggregates.by_employee|length }} engineers</div>
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-label">Planned Capacity</div>
-            <div class="kpi-value"><span id="kpiExpectedVal">{{ aggregates.totals.expected_hrs|round(1) }}</span> <span class="kpi-unit">hrs</span></div>
-            <div class="kpi-meta text-muted">Expected baseline effort</div>
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-label">Actual Effort Logged</div>
-            <div class="kpi-value"><span id="kpiActualVal">{{ aggregates.totals.actual_hrs|round(1) }}</span> <span class="kpi-unit">hrs</span></div>
-            <div class="kpi-meta text-muted">Total execution time</div>
-        </div>
-        <div class="kpi-card {% if aggregates.totals.variance > 0 %}kpi-alert{% else %}kpi-success{% endif %}" id="kpiVarianceCard">
-            <div class="kpi-label">Net Effort Variance</div>
-            <div class="kpi-value">
-                <span id="kpiVarianceVal">{% if aggregates.totals.variance > 0 %}+{% endif %}{{ aggregates.totals.variance|round(1) }}</span> <span class="kpi-unit">hrs</span>
-            </div>
-            <div class="kpi-meta" id="kpiVarianceMeta">
-                {% if aggregates.totals.variance > 0 %}
-                    <span class="badge badge-warning">Overrun (+{{ ((aggregates.totals.variance / aggregates.totals.expected_hrs) * 100)|round(1) }}%)</span>
-                {% else %}
-                    <span class="badge badge-success">Under Budget</span>
-                {% endif %}
-            </div>
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-label">Utilization Rate</div>
-            <div class="kpi-value"><span id="kpiUtilVal">{{ aggregates.totals.utilization_pct }}</span><span class="kpi-unit">%</span></div>
-            <div class="kpi-meta text-muted">Actual ÷ Planned Capacity</div>
-        </div>
-        <div class="kpi-card {% if variance_data.overloaded_employees|length > 0 %}kpi-alert{% endif %}" id="overloadKpiCard">
-            <div class="kpi-label">Overload Flagged</div>
-            <div class="kpi-value"><span id="overloadCountVal">{{ variance_data.overloaded_employees|length }}</span> <span class="kpi-unit">resources</span></div>
-            <div class="kpi-meta text-muted">&gt; <span id="threshLabelVal">{{ variance_data.threshold_pct|int or 110 }}</span>% threshold</div>
-        </div>
-    </div>
+    .exec-header-left h1 {
+        font-size: 28px;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        color: #0f172a;
+        margin: 0 0 6px 0;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
 
-    <!-- Live Executive Control Bar -->
-    <div class="dash-controls-bar d-flex justify-between align-center mb-4" style="flex-wrap: wrap; gap: 12px; background: var(--bg-card); padding: 12px 20px; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
-        <div class="threshold-simulator-card" style="margin: 0; box-shadow: none;">
-            <span class="thresh-label">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20v-6M6 20V10M18 20V4"/></svg>
-                Capacity Overload Simulator:
-            </span>
-            <input type="range" id="overloadSlider" class="thresh-slider" min="100" max="140" value="{{ variance_data.threshold_pct|int or 110 }}" step="1" oninput="updateOverloadThreshold(this.value)">
-            <span id="sliderValueDisplay" class="thresh-badge">{{ variance_data.threshold_pct|int or 110 }}%</span>
-            <small class="text-muted" style="font-size: 11px;">(Simulates live team capacity threshold)</small>
-        </div>
-        <div class="d-flex align-center gap-2">
-            <button type="button" class="btn btn-sm btn-outline" onclick="window.print()">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                Print / PDF View
-            </button>
-        </div>
-    </div>
+    .exec-header-left .sub {
+        font-size: 14px;
+        color: #64748b;
+        font-weight: 500;
+    }
 
-    <!-- AI Narrative & Governance Insights -->
-    <div class="card ai-card mb-4">
-        <div class="card-header d-flex justify-between align-center">
-            <div class="d-flex align-center gap-2">
-                <div class="ai-sparkle">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-                </div>
-                <h3>Executive Summary & Strategic Insights</h3>
-            </div>
-            <span class="badge badge-ai">{{ ai_insights.provider }}</span>
-        </div>
-        <div class="card-body">
-            <div class="ai-exec-paragraph">
-                {{ ai_insights.executive_summary }}
-            </div>
+    .exec-badges-row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 10px;
+    }
 
-            <div class="ai-cols-grid mt-4">
-                <div class="ai-col-box">
-                    <h4 class="ai-subhead">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0284c7" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                        Key Governance Findings
-                    </h4>
-                    <ul class="ai-bullet-list">
-                        {% for finding in ai_insights.key_findings %}
-                        <li>{{ finding }}</li>
-                        {% endfor %}
-                    </ul>
-                </div>
+    .pill-badge {
+        background: #f1f5f9;
+        color: #334155;
+        padding: 4px 14px;
+        border-radius: 40px;
+        font-size: 12px;
+        font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .pill-badge.primary { background: #dbeafe; color: #1e40af; }
+    .pill-badge.success { background: #dcfce7; color: #15803d; }
+    .pill-badge.warning { background: #fef3c7; color: #b45309; }
 
-                <div class="ai-col-box">
-                    <h4 class="ai-subhead">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
-                        Actionable Recommendations
-                    </h4>
-                    <ul class="ai-bullet-list">
-                        {% for rec in ai_insights.recommendations %}
-                        <li>{{ rec }}</li>
-                        {% endfor %}
-                    </ul>
-                </div>
-            </div>
-        </div>
-    </div>
+    .exec-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
 
-    <!-- Visual Analytics Grid -->
-    <div class="charts-grid mb-4">
-        <div class="card chart-card">
-            <div class="card-header d-flex justify-between align-center">
-                <h3>Work-Type Effort Distribution</h3>
-                <small class="text-muted" style="font-size: 11px;">Click segment to filter</small>
-            </div>
-            <div class="card-body chart-body">
-                <canvas id="workTypeChart"></canvas>
-            </div>
-        </div>
+    /* KPI Grid */
+    .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 16px;
+        margin-bottom: 36px;
+    }
 
-        <div class="card chart-card">
-            <div class="card-header d-flex justify-between align-center">
-                <h3>Resource Hours: Planned vs Actual</h3>
-                <small class="text-muted" style="font-size: 11px;">Click bar to inspect engineer</small>
-            </div>
-            <div class="card-body chart-body">
-                <canvas id="resourceHoursChart"></canvas>
-            </div>
-        </div>
+    .kpi-card {
+        background: #f8fafc;
+        border-radius: 18px;
+        padding: 18px 20px;
+        border: 1px solid #e8ecf1;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .kpi-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 14px -3px rgba(0,0,0,0.06);
+    }
 
-        <div class="card chart-card">
-            <div class="card-header d-flex justify-between align-center">
-                <h3>Top {{ aggregates.entity_label }} Allocations</h3>
-                <small class="text-muted" style="font-size: 11px;">Click to filter tables</small>
-            </div>
-            <div class="card-body chart-body">
-                <canvas id="serviceChart"></canvas>
-            </div>
-        </div>
+    .kpi-card .label {
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #64748b;
+    }
 
-        <div class="card chart-card">
-            <div class="card-header">
-                <h3>Weekly Delivery Trajectory</h3>
-            </div>
-            <div class="card-body chart-body">
-                <canvas id="weeklyTrendChart"></canvas>
-            </div>
-        </div>
-    </div>
+    .kpi-card .value {
+        font-size: 28px;
+        font-weight: 800;
+        color: #0f172a;
+        margin-top: 4px;
+        line-height: 1.2;
+    }
 
-    <!-- Active Cross-Filter Chip Banner -->
-    <div id="activeFilterBar" class="active-filter-bar" style="display: none;">
-        <span class="filter-chip-text">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-            Active Cross-Filter: <strong id="filterBadgeText"></strong>
-        </span>
-        <button type="button" class="btn-clear-filter" onclick="clearCrossFilter()">Clear Filter ✕</button>
-    </div>
+    .kpi-card .sub-text {
+        font-size: 12px;
+        color: #64748b;
+        margin-top: 4px;
+    }
 
-    <!-- Quick Table Filter Bar -->
-    <!-- Burnout Risk & Smart Workload Rebalancer -->
-    {% if variance_data.burnout_analysis %}
-    <div class="card mb-4" style="border-left: 4px solid #f59e0b;">
-        <div class="card-header d-flex justify-between align-center">
-            <div class="d-flex align-center gap-2">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                <h3 style="margin: 0;">Burnout Risk & Proactive Workload Rebalancer</h3>
-            </div>
-            <span class="badge {% if variance_data.burnout_analysis.overloaded_count > 0 %}badge-danger{% else %}badge-success{% endif %}">
-                {{ variance_data.burnout_analysis.overloaded_count }} Resource(s) Above 115% Threshold
-            </span>
-        </div>
-        <div class="card-body">
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px;">
-                <!-- Left: Resources at Risk -->
-                <div>
-                    <h4 style="font-size: 12.5px; font-weight: 700; text-transform: uppercase; color: var(--slate-600); margin-bottom: 10px; letter-spacing: 0.5px;">
-                        Over-Allocated Resources & Fatigue Risk
-                    </h4>
-                    <div style="display: flex; flex-direction: column; gap: 8px;">
-                        {% for emp in variance_data.burnout_analysis.overloaded_resources %}
-                        <div style="background: var(--slate-100); border-radius: var(--radius-sm); padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <strong style="font-size: 13.5px;">{{ emp.name }}</strong>
-                                <div style="font-size: 11.5px; color: var(--slate-600);">
-                                    {{ emp.actual_hrs }} hrs logged (vs {{ emp.expected_hrs }}h planned) • <strong>+{{ emp.variance }}h variance</strong>
-                                </div>
-                            </div>
-                            <div style="text-align: right;">
-                                <span class="burnout-risk-badge {% if emp.risk_level == 'Critical' %}burnout-critical{% else %}burnout-high{% endif %}">
-                                    {{ emp.risk_level }} ({{ emp.utilization_pct }}%)
-                                </span>
-                            </div>
-                        </div>
-                        {% endfor %}
-                    </div>
-                </div>
+    .kpi-card .value.blue { color: #2563eb; }
+    .kpi-card .value.green { color: #059669; }
+    .kpi-card .value.amber { color: #d97706; }
+    .kpi-card .value.red { color: #dc2626; }
+    .kpi-card .value.purple { color: #7c3aed; }
 
-                <!-- Right: Algorithmic Workload Rebalancing Plan -->
-                <div>
-                    <div class="d-flex justify-between align-center mb-2">
-                        <h4 style="font-size: 12.5px; font-weight: 700; text-transform: uppercase; color: var(--slate-600); margin: 0; letter-spacing: 0.5px;">
-                            Algorithmic Workload Rebalancing Plan
-                        </h4>
-                        <button type="button" class="btn btn-sm btn-outline" id="btnToggleSimulate" onclick="toggleRebalanceSimulation()" style="font-size: 11px; padding: 3px 8px;">
-                            Simulate Impact
-                        </button>
-                    </div>
-                    {% if variance_data.burnout_analysis.rebalance_suggestions %}
-                        {% for sug in variance_data.burnout_analysis.rebalance_suggestions %}
-                        <div class="rebalance-card">
-                            <div>
-                                <div class="rebalance-transfer-pill">
-                                    <span class="text-danger font-bold">{{ sug.from_resource }}</span>
-                                    <span>➔</span>
-                                    <span class="text-success font-bold">{{ sug.to_resource }}</span>
-                                    <span class="badge badge-primary font-bold">Transfer ~{{ sug.hours_to_transfer }} hrs</span>
-                                </div>
-                                <p style="font-size: 12px; color: var(--slate-600); margin: 6px 0 0 0;">
-                                    {{ sug.impact }}
-                                </p>
-                            </div>
-                        </div>
-                        {% endfor %}
-                    {% else %}
-                        <p class="text-muted" style="font-size: 13px;">No critical rebalancing needed at current thresholds.</p>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
-    </div>
-    {% endif %}
+    /* Section Header */
+    .section-title {
+        font-size: 18px;
+        font-weight: 700;
+        color: #0f172a;
+        margin: 36px 0 16px 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .section-title .count {
+        background: #eef2f6;
+        color: #475569;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 2px 10px;
+        border-radius: 20px;
+    }
+    .section-title .line {
+        flex: 1;
+        height: 1px;
+        background: #e2e8f0;
+        margin-left: 8px;
+    }
 
-    <!-- Data Quality, Scope Creep & SLA Efficiency Radar -->
-    {% if aggregates.anomaly_radar %}
-    <div class="card mb-4" style="border-left: 4px solid #0ea5e9;">
-        <div class="card-header d-flex justify-between align-center">
-            <div class="d-flex align-center gap-2">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                <h3 style="margin: 0;">Data Quality, Scope Creep & SLA Efficiency Radar</h3>
-            </div>
-            <span class="badge badge-neutral">Operational Audit</span>
-        </div>
-        <div class="card-body">
-            <div class="anomaly-grid">
-                <!-- Box 1: Scope Creep / Unbudgeted Tasks -->
-                <div class="anomaly-card">
-                    <div class="anomaly-card-header">
-                        <span class="anomaly-card-title">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
-                            Unbudgeted Scope Creep
-                        </span>
-                        <span class="badge badge-danger">{{ aggregates.anomaly_radar.unbudgeted_count }} tasks ({{ aggregates.anomaly_radar.unbudgeted_hours }} hrs)</span>
-                    </div>
-                    <p style="font-size: 11.5px; color: var(--slate-600); margin-bottom: 8px;">
-                        Tasks delivered with 0 planned expected hours:
-                    </p>
-                    <div style="max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;">
-                        {% for t in aggregates.anomaly_radar.unbudgeted_tasks %}
-                        <div style="background: var(--slate-100); padding: 6px 10px; border-radius: var(--radius-sm); font-size: 12px; display: flex; justify-content: space-between; align-items: center;">
-                            <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px;" title="{{ t.task }}">
-                                <strong>{{ t.task }}</strong>
-                                <span class="text-muted" style="font-size: 11px;"> • {{ t.employee }} ({{ t.service }})</span>
-                            </div>
-                            <span class="text-danger font-bold">{{ t.actual_hrs }}h</span>
-                        </div>
-                        {% endfor %}
-                    </div>
-                </div>
+    /* Tables */
+    .table-wrap {
+        overflow-x: auto;
+        border-radius: 14px;
+        border: 1px solid #e2e8f0;
+        background: #ffffff;
+        margin-bottom: 24px;
+    }
 
-                <!-- Box 2: High Duration Single Tasks -->
-                <div class="anomaly-card">
-                    <div class="anomaly-card-header">
-                        <span class="anomaly-card-title">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                            Marathon Single-Task Outliers
-                        </span>
-                        <span class="badge badge-warning">{{ aggregates.anomaly_radar.marathon_count }} deliverables</span>
-                    </div>
-                    <p style="font-size: 11.5px; color: var(--slate-600); margin-bottom: 8px;">
-                        Single deliverables logging &ge; 7 hours:
-                    </p>
-                    <div style="max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;">
-                        {% for t in aggregates.anomaly_radar.marathon_tasks %}
-                        <div style="background: var(--slate-100); padding: 6px 10px; border-radius: var(--radius-sm); font-size: 12px; display: flex; justify-content: space-between; align-items: center;">
-                            <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px;" title="{{ t.task }}">
-                                <strong>{{ t.task }}</strong>
-                                <span class="text-muted" style="font-size: 11px;"> • {{ t.employee }}</span>
-                            </div>
-                            <span class="text-warning font-bold">{{ t.actual_hrs }}h</span>
-                        </div>
-                        {% endfor %}
-                    </div>
-                </div>
+    table.exec-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        min-width: 650px;
+    }
 
-                <!-- Box 3: Client / Account SLA Delivery Efficiency -->
-                <div class="anomaly-card">
-                    <div class="anomaly-card-header">
-                        <span class="anomaly-card-title">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                            Account SLA Budget Health
-                        </span>
-                        <span class="badge badge-primary">SLA Ratio</span>
-                    </div>
-                    <p style="font-size: 11.5px; color: var(--slate-600); margin-bottom: 8px;">
-                        Actual vs Expected planned hour ratio:
-                    </p>
-                    <div style="max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;">
-                        {% for s in aggregates.anomaly_radar.service_efficiency[:6] %}
-                        <div style="background: var(--slate-100); padding: 6px 10px; border-radius: var(--radius-sm); font-size: 12px; display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <strong>{{ s.service }}</strong>
-                                <span class="text-muted" style="font-size: 11px;"> ({{ s.actual_hrs }}h / {{ s.expected_hrs }}h)</span>
-                            </div>
-                            <span class="efficiency-tag {% if s.health == 'On Track' %}efficiency-on-track{% elif s.health == 'Moderate Overrun' %}efficiency-moderate{% else %}efficiency-critical{% endif %}">
-                                {{ s.ratio_pct }}%
-                            </span>
-                        </div>
-                        {% endfor %}
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    {% endif %}
+    table.exec-table th {
+        background: #f8fafc;
+        text-align: left;
+        padding: 11px 16px;
+        font-weight: 600;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        color: #475569;
+        border-bottom: 1px solid #e2e8f0;
+    }
 
-    <!-- Attention Points & Overload Alerts -->
-    {% if variance_data.attention_points|length > 0 %}
-    <div class="card mb-4">
-        <div class="card-header">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-            <h3>Governance Attention Points & Overload Alerts</h3>
-        </div>
-        <div class="card-body">
-            <div class="attention-grid">
-                {% for pt in variance_data.attention_points %}
-                <div class="attention-card attention-{{ pt.level }}">
-                    <strong>{{ pt.title }}</strong>
-                    <p>{{ pt.message }}</p>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
+    table.exec-table td {
+        padding: 11px 16px;
+        border-bottom: 1px solid #f1f5f9;
+        color: #1e293b;
+    }
 
-    <!-- Table 1: Work-Type-wise Resource Utilization -->
-    <div class="card mb-4">
-        <div class="card-header d-flex justify-between align-center">
-            <h3>Work-Type-wise Resource Utilization</h3>
-            <button type="button" class="btn-table-action" onclick="exportTableToCSV('workTypeTable', 'Work_Type_Utilization.csv')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                CSV
-            </button>
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="data-table" id="workTypeTable">
-                    <thead>
-                        <tr>
-                            <th>Work Type</th>
-                            <th class="text-right">Tasks</th>
-                            <th class="text-right">Expected Hrs</th>
-                            <th class="text-right">Actual Hrs</th>
-                            <th class="text-right">Share of Effort</th>
-                            <th class="text-right">Variance</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for wt in aggregates.by_work_type %}
-                        <tr class="row-clickable" onclick="applyCrossFilter('Work Type', '{{ wt.work_type }}')" title="Click to filter by {{ wt.work_type }}">
-                            <td><strong>{{ wt.work_type }}</strong></td>
-                            <td class="text-right">{{ wt.tasks }}</td>
-                            <td class="text-right">{{ wt.expected_hrs|round(1) }}</td>
-                            <td class="text-right">{{ wt.actual_hrs|round(1) }}</td>
-                            <td class="text-right">{{ wt.share_pct }}%</td>
-                            <td class="text-right {% if wt.variance > 0 %}text-danger font-bold{% else %}text-success{% endif %}">
-                                {% if wt.variance > 0 %}+{% endif %}{{ wt.variance|round(1) }}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                        <tr class="tr-total">
-                            <td><strong>Total</strong></td>
-                            <td class="text-right"><strong>{{ aggregates.totals.tasks }}</strong></td>
-                            <td class="text-right"><strong>{{ aggregates.totals.expected_hrs|round(1) }}</strong></td>
-                            <td class="text-right"><strong>{{ aggregates.totals.actual_hrs|round(1) }}</strong></td>
-                            <td class="text-right"><strong>100.0%</strong></td>
-                            <td class="text-right font-bold {% if aggregates.totals.variance > 0 %}text-danger{% else %}text-success{% endif %}">
-                                {% if aggregates.totals.variance > 0 %}+{% endif %}{{ aggregates.totals.variance|round(1) }}
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
+    table.exec-table tr:hover td {
+        background: #fbfcfe;
+    }
 
-    <!-- Table 2: Resource-wise Resource Utilization -->
-    <div class="card mb-4">
-        <div class="card-header d-flex justify-between align-center">
-            <div class="d-flex align-center gap-2">
-                <h3>Resource-wise Resource Utilization</h3>
-                <small class="text-muted">(Click any engineer for deep-dive drawer)</small>
-            </div>
-            <button type="button" class="btn-table-action" onclick="exportTableToCSV('resourceTable', 'Resource_Utilization.csv')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                CSV
-            </button>
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="data-table" id="resourceTable">
-                    <thead>
-                        <tr>
-                            <th>Resource Name</th>
-                            <th class="text-right">Tasks</th>
-                            <th class="text-right">Expected Hrs</th>
-                            <th class="text-right">Actual Hrs</th>
-                            <th class="text-right">Variance</th>
-                            <th class="text-right">Utilization %</th>
-                            <th class="text-right">Completed</th>
-                            <th class="text-right">In Progress</th>
-                            <th class="text-right">Pending</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for emp in aggregates.by_employee %}
-                        <tr class="row-clickable {% if emp.utilization_pct >= 110 %}row-overloaded{% endif %}" onclick="openEmployeeDrawer('{{ emp.employee }}')" data-emp="{{ emp.employee }}" data-util="{{ emp.utilization_pct }}" title="Click for {{ emp.employee }} deep-dive breakdown">
-                            <td><strong>{{ emp.employee }}</strong></td>
-                            <td class="text-right">{{ emp.tasks }}</td>
-                            <td class="text-right">{{ emp.expected_hrs|round(1) }}</td>
-                            <td class="text-right">{{ emp.actual_hrs|round(1) }}</td>
-                            <td class="text-right col-var {% if emp.variance > 0 %}text-danger font-bold{% else %}text-success{% endif %}">
-                                {% if emp.variance > 0 %}+{% endif %}{{ emp.variance|round(1) }}
-                            </td>
-                            <td class="text-right col-util">
-                                <span class="badge {% if emp.utilization_pct >= 110 %}badge-danger{% elif emp.utilization_pct >= 95 %}badge-info{% else %}badge-light{% endif %}">
-                                    {{ emp.utilization_pct }}%
-                                </span>
-                            </td>
-                            <td class="text-right">{{ emp.status_counts.Completed or 0 }}</td>
-                            <td class="text-right">{{ emp.status_counts['In Progress'] or 0 }}</td>
-                            <td class="text-right">{{ emp.status_counts.Pending or 0 }}</td>
-                        </tr>
-                        {% endfor %}
-                        <tr class="tr-total">
-                            <td><strong>Total</strong></td>
-                            <td class="text-right"><strong>{{ aggregates.totals.tasks }}</strong></td>
-                            <td class="text-right"><strong>{{ aggregates.totals.expected_hrs|round(1) }}</strong></td>
-                            <td class="text-right"><strong>{{ aggregates.totals.actual_hrs|round(1) }}</strong></td>
-                            <td class="text-right font-bold {% if aggregates.totals.variance > 0 %}text-danger{% else %}text-success{% endif %}">
-                                {% if aggregates.totals.variance > 0 %}+{% endif %}{{ aggregates.totals.variance|round(1) }}
-                            </td>
-                            <td class="text-right"><strong>{{ aggregates.totals.utilization_pct }}%</strong></td>
-                            <td class="text-right"><strong>{{ aggregates.status_counts.Completed or 0 }}</strong></td>
-                            <td class="text-right"><strong>{{ aggregates.status_counts['In Progress'] or 0 }}</strong></td>
-                            <td class="text-right"><strong>{{ aggregates.status_counts.Pending or 0 }}</strong></td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
+    table.exec-table tr:last-child td {
+        border-bottom: none;
+    }
 
-    <!-- Table 2b: Entity / University-wise Workload & Attention Distribution -->
-    <div class="card mb-4">
-        <div class="card-header d-flex justify-between align-center">
-            <div class="d-flex align-center gap-2">
-                <h3>{{ aggregates.entity_label }}-wise Workload & Attention Distribution</h3>
-                <small class="text-muted">(Tracked across {{ aggregates.by_service|length }} accounts)</small>
-            </div>
-            <button type="button" class="btn-table-action" onclick="exportTableToCSV('serviceTable', '{{ aggregates.entity_label }}_Workload_Distribution.csv')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                CSV
-            </button>
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="data-table" id="serviceTable">
-                    <thead>
-                        <tr>
-                            <th>{{ aggregates.entity_label }} Name</th>
-                            <th class="text-right">Tasks</th>
-                            <th class="text-right">Expected Hrs</th>
-                            <th class="text-right">Actual Hrs</th>
-                            <th class="text-right">Variance</th>
-                            <th class="text-right">Share of Effort</th>
-                            <th class="text-right">Attention Level</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for srv in aggregates.by_service %}
-                        <tr class="row-clickable" onclick="applyCrossFilter('{{ aggregates.entity_label }}', '{{ srv.service }}')" title="Click to filter by {{ srv.service }}">
-                            <td><strong>{{ srv.service }}</strong></td>
-                            <td class="text-right">{{ srv.tasks }}</td>
-                            <td class="text-right">{{ srv.expected_hrs|round(1) }}</td>
-                            <td class="text-right">{{ srv.actual_hrs|round(1) }}</td>
-                            <td class="text-right {% if srv.variance > 0 %}text-danger font-bold{% else %}text-success{% endif %}">
-                                {% if srv.variance > 0 %}+{% endif %}{{ srv.variance|round(1) }}
-                            </td>
-                            <td class="text-right">{{ srv.share_pct }}%</td>
-                            <td class="text-right">
-                                <span class="badge {% if srv.attention_level == 'Very High' %}badge-danger{% elif srv.attention_level == 'High' %}badge-warning{% elif srv.attention_level == 'Medium' %}badge-info{% else %}badge-neutral{% endif %}">
-                                    {{ srv.attention_level }}
-                                </span>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
+    .row-total td {
+        background: #f8fafc !important;
+        font-weight: 700 !important;
+        color: #0f172a;
+        border-top: 2px solid #e2e8f0;
+    }
 
-    <!-- Table 3: Most Overloaded Work Summary -->
-    <div class="card mb-4">
-        <div class="card-header d-flex justify-between align-center">
-            <h3>Most Overloaded Work – {{ aggregates.month_label }}</h3>
-            <button type="button" class="btn-table-action" onclick="exportTableToCSV('summaryTable', 'Overloaded_Work_Summary.csv')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                CSV
-            </button>
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="data-table" id="summaryTable">
-                    <thead>
-                        <tr>
-                            <th>Category</th>
-                            <th>Entity Name</th>
-                            <th class="text-right">Actual Effort</th>
-                            <th class="text-right">Utilization / Share</th>
-                            <th>Governance Highlight</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for item in variance_data.overloaded_work_table %}
-                        <tr class="row-clickable" onclick="applyCrossFilter('{{ item.category }}', '{{ item.name }}')" title="Click to filter by {{ item.name }}">
-                            <td><span class="badge badge-field">{{ item.category }}</span></td>
-                            <td><strong>{{ item.name }}</strong></td>
-                            <td class="text-right"><strong>{{ item.actual_effort }}</strong></td>
-                            <td class="text-right"><span class="badge badge-info">{{ item.utilization_share }}</span></td>
-                            <td>{{ item.governance_highlight }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
+    /* Status Badges */
+    .status-badge {
+        display: inline-block;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 3px 10px;
+        border-radius: 12px;
+    }
+    .status-badge.overloaded { background: #fee2e2; color: #b91c1c; }
+    .status-badge.optimal { background: #dcfce7; color: #15803d; }
+    .status-badge.underutilized { background: #fef3c7; color: #b45309; }
+    .status-badge.bench { background: #f3e8ff; color: #6b21a8; }
 
-    <!-- Table 4: Entity-wise Weekly Utilization Breakdown -->
-    <div class="card mb-4">
-        <div class="card-header d-flex justify-between align-center">
-            <h3>{{ aggregates.entity_label }}-wise Weekly Hours Breakdown</h3>
-            <button type="button" class="btn-table-action" onclick="exportTableToCSV('weeklyTable', '{{ aggregates.entity_label }}_Weekly_Breakdown.csv')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                CSV
-            </button>
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="data-table data-table-sm" id="weeklyTable">
-                    <thead>
-                        <tr>
-                            <th>{{ aggregates.entity_label }}</th>
-                            {% for w in aggregates.ordered_weeks %}
-                            <th class="text-right">{{ w }}</th>
-                            {% endfor %}
-                            <th class="text-right">Period Total</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for srv_name, pdata in aggregates.service_week_pivot.items() %}
-                        <tr class="row-clickable" onclick="applyCrossFilter('{{ aggregates.entity_label }}', '{{ srv_name }}')" title="Click to filter by {{ srv_name }}">
-                            <td><strong>{{ srv_name }}</strong></td>
-                            {% for w in aggregates.ordered_weeks %}
-                            <td class="text-right">
-                                {{ pdata.weeks[w].Total or 0 }} hrs
-                            </td>
-                            {% endfor %}
-                            <td class="text-right font-bold" style="background-color: var(--slate-100);">
-                                {{ pdata.total_actual }} hrs
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-</div>
+    /* Service Summary Chips Grid */
+    .service-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        gap: 10px;
+        margin: 16px 0 20px 0;
+    }
 
-<!-- Employee Deep-Dive Slide-Over Drawer Modal -->
-<div id="empDrawerBackdrop" class="drawer-backdrop" onclick="closeEmployeeDrawer(event)">
-    <div class="drawer-panel" onclick="event.stopPropagation()">
-        <div class="drawer-header">
-            <div>
-                <h3 class="drawer-title" id="drawerEmpName">Engineer Details</h3>
-                <div class="drawer-subtitle" id="drawerEmpSub">Resource Capacity & Work Breakdown</div>
-            </div>
-            <button class="drawer-close-btn" onclick="closeEmployeeDrawer(event)" title="Close">&times;</button>
-        </div>
-        <div class="drawer-body">
-            <!-- 4 Stat Boxes -->
-            <div class="drawer-stat-grid">
-                <div class="drawer-stat-box">
-                    <div class="drawer-stat-label">Tasks Logged</div>
-                    <div class="drawer-stat-value" id="drawerTasks">-</div>
-                </div>
-                <div class="drawer-stat-box">
-                    <div class="drawer-stat-label">Planned Capacity</div>
-                    <div class="drawer-stat-value" id="drawerExpHrs">-</div>
-                </div>
-                <div class="drawer-stat-box">
-                    <div class="drawer-stat-label">Actual Effort</div>
-                    <div class="drawer-stat-value" id="drawerActHrs">-</div>
-                </div>
-                <div class="drawer-stat-box">
-                    <div class="drawer-stat-label">Utilization Rate</div>
-                    <div class="drawer-stat-value" id="drawerUtilPct">-</div>
-                </div>
-            </div>
+    .service-summary-item {
+        background: #f8fafc;
+        border: 1px solid #e8ecf1;
+        border-radius: 12px;
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
 
-            <!-- Task Status Progress -->
-            <div class="drawer-section-title">Task Completion Breakdown</div>
-            <div id="drawerStatusPills" class="d-flex gap-2" style="flex-wrap: wrap; margin-bottom: 16px;"></div>
+    .service-summary-item .svc-name {
+        font-weight: 700;
+        font-size: 12px;
+        color: #0f172a;
+    }
+    .service-summary-item .svc-hours {
+        font-weight: 800;
+        font-size: 16px;
+        color: #2563eb;
+    }
+    .service-summary-item .svc-share {
+        font-size: 11px;
+        color: #64748b;
+    }
 
-            <!-- Services & Work Types Breakdown -->
-            <div class="drawer-section-title">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-                Effort Distribution by Service & Type
-            </div>
-            <div class="table-responsive" style="max-height: 380px; overflow-y: auto;">
-                <table class="data-table" id="drawerCrossTable" style="font-size: 12.5px;">
-                    <thead>
-                        <tr>
-                            <th>{{ aggregates.entity_label }}</th>
-                            <th>Work Type</th>
-                            <th class="text-right">Tasks</th>
-                            <th class="text-right">Actual Hrs</th>
-                        </tr>
-                    </thead>
-                    <tbody id="drawerCrossBody"></tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-</div>
+    /* Multi-column weekly service matrix */
+    .service-matrix-table th, .service-matrix-table td {
+        text-align: center;
+        padding: 7px 8px;
+        font-size: 11.5px;
+    }
+    .service-matrix-table td:first-child, .service-matrix-table th:first-child {
+        text-align: left;
+        font-weight: 700;
+        padding-left: 14px;
+    }
+
+    /* Overload Radar Cards */
+    .radar-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 14px;
+        margin-bottom: 28px;
+    }
+    .radar-card {
+        background: #ffffff;
+        border-radius: 14px;
+        padding: 16px 18px;
+        border: 1px solid #e2e8f0;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+    }
+    .radar-card .radar-type {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-weight: 700;
+        color: #64748b;
+        margin-bottom: 4px;
+    }
+    .radar-card .radar-title {
+        font-size: 16px;
+        font-weight: 800;
+        color: #0f172a;
+        margin-bottom: 6px;
+    }
+    .radar-card .radar-sub {
+        font-size: 12px;
+        color: #475569;
+        margin-bottom: 10px;
+    }
+    .radar-bar-bg {
+        height: 6px;
+        background: #f1f5f9;
+        border-radius: 4px;
+        overflow: hidden;
+    }
+    .radar-bar-fill {
+        height: 100%;
+        border-radius: 4px;
+    }
+
+    /* 5 Points Action Grid */
+    .action-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 14px;
+        margin-bottom: 32px;
+    }
+    .action-card {
+        background: #ffffff;
+        border-radius: 14px;
+        padding: 16px 18px;
+        border: 1px solid #e2e8f0;
+        border-left: 4px solid #2563eb;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+    }
+    .action-card:nth-child(1) { border-left-color: #dc2626; }
+    .action-card:nth-child(2) { border-left-color: #ea580c; }
+    .action-card:nth-child(3) { border-left-color: #2563eb; }
+    .action-card:nth-child(4) { border-left-color: #7c3aed; }
+    .action-card:nth-child(5) { border-left-color: #059669; }
+
+    .action-card .title {
+        font-size: 14px;
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 6px;
+    }
+    .action-card .desc {
+        font-size: 12.5px;
+        color: #475569;
+        line-height: 1.45;
+        margin-bottom: 12px;
+    }
+    .action-card .tag {
+        font-size: 11px;
+        font-weight: 600;
+        background: #f1f5f9;
+        color: #334155;
+        padding: 4px 10px;
+        border-radius: 8px;
+        align-self: flex-start;
+    }
+
+    /* Gemini AI Box */
+    .gemini-box {
+        background: linear-gradient(135deg, #f0fdf4 0%, #eff6ff 100%);
+        border: 1px solid #bfdbfe;
+        border-radius: 18px;
+        padding: 24px;
+        margin-bottom: 32px;
+    }
+</style>
 {% endblock %}
 
-{% block extra_scripts %}
-<script>
-    // Injected Chart & Tabular Data from Backend
-    const aggregatesData = {{ aggregates | tojson }};
-    const varianceData = {{ variance_data | tojson }};
-    const workTypeData = aggregatesData.by_work_type || [];
-    const employeeData = aggregatesData.by_employee || [];
-    const serviceData = aggregatesData.by_service || [];
-    const weeklyData = aggregatesData.by_week || [];
-    const crossTabData = aggregatesData.cross_tab || [];
-    const entityLabel = aggregatesData.entity_label || 'Service';
-    const defaultTotals = aggregatesData.totals || {};
+{% block content %}
+<div class="exec-container">
 
-    // Color Palette
-    const palette = ['#2563eb', '#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+    <!-- HEADER -->
+    <div class="exec-header">
+        <div class="exec-header-left">
+            <h1>📊 Resource Utilization Report</h1>
+            <div class="sub">{{ aggregates.month_label }} &bull; Work-Type, Resource &amp; Service Analysis</div>
+            <div class="exec-badges-row">
+                <span class="pill-badge primary">📅 Month: {{ aggregates.month_label }}</span>
+                <span class="pill-badge">⏱️ Period: {{ aggregates.period_label }}</span>
+                <span class="pill-badge success">👥 {{ aggregates.executive.total_headcount }} Active Engineers</span>
+                <span class="pill-badge warning">🎯 Target: 80–85% Billable</span>
+            </div>
+        </div>
+        <div class="exec-actions">
+            {% if report_id > 0 %}
+            <a href="/export/excel/{{ report_id }}" class="btn btn-excel" onclick="showToast('Downloading complete 4-sheet workbook...', 'info')">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+                Export Excel (.xlsx)
+            </a>
+            <a href="/export/pdf/{{ report_id }}" class="btn btn-pdf" onclick="showToast('Generating executive PDF report...', 'info')">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                Export PDF
+            </a>
+            {% else %}
+            <button type="button" class="btn btn-excel" style="opacity: 0.6; cursor: not-allowed;" onclick="showToast('Please upload a timesheet first to export reports.', 'warning')">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>
+                Export Excel
+            </button>
+            <button type="button" class="btn btn-pdf" style="opacity: 0.6; cursor: not-allowed;" onclick="showToast('Please upload a timesheet first to export reports.', 'warning')">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                Export PDF
+            </button>
+            {% endif %}
+            <button type="button" class="btn btn-outline" onclick="window.print()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                Print
+            </button>
+            <a href="/upload" class="btn btn-outline">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                Upload Sheet
+            </a>
+        </div>
+    </div>
 
-    // Helper to get theme-aware chart grid colors
-    function getGridColor() {
-        return document.documentElement.getAttribute('data-theme') === 'dark' ? '#1f293d' : '#f1f5f9';
-    }
-    function getTextColor() {
-        return document.documentElement.getAttribute('data-theme') === 'dark' ? '#94a3b8' : '#475569';
-    }
+    <!-- KPI SUMMARY (6 CARDS) -->
+    <div class="kpi-grid">
+        <div class="kpi-card">
+            <div class="label">Total Tasks</div>
+            <div class="value">{{ aggregates.executive.total_tasks }}</div>
+            <div class="sub-text">Across all streams</div>
+        </div>
+        <div class="kpi-card">
+            <div class="label">Expected Hours</div>
+            <div class="value blue">{{ aggregates.executive.expected_hrs }}</div>
+            <div class="sub-text">Baseline planned effort</div>
+        </div>
+        <div class="kpi-card">
+            <div class="label">Actual Hours</div>
+            <div class="value">{{ aggregates.executive.actual_hrs }}</div>
+            <div class="sub-text">Total logged time</div>
+        </div>
+        <div class="kpi-card">
+            <div class="label">Effort Variance</div>
+            <div class="value {% if aggregates.totals.variance > 0 %}amber{% else %}green{% endif %}">
+                {% if aggregates.totals.variance > 0 %}+{% endif %}{{ aggregates.totals.variance }}
+            </div>
+            <div class="sub-text">
+                {% if aggregates.totals.variance > 0 %}Overrun vs baseline{% else %}Within expected budget{% endif %}
+            </div>
+        </div>
+        <div class="kpi-card">
+            <div class="label">Capacity Util.</div>
+            <div class="value {% if aggregates.totals.utilization_pct > 100 %}amber{% else %}green{% endif %}">
+                {{ aggregates.totals.utilization_pct }}%
+            </div>
+            <div class="sub-text">Actual &divide; Expected Capacity</div>
+        </div>
+        <div class="kpi-card">
+            <div class="label">Active Resources</div>
+            <div class="value purple">{{ aggregates.executive.total_headcount }}</div>
+            <div class="sub-text">{{ aggregates.executive.overloaded_count or 0 }} overloaded (>100%)</div>
+        </div>
+    </div>
 
-    // Chart instances stored for live theme update
-    let chartWt, chartEmp, chartSrv, chartWeek;
+    <!-- ─── 1. WORK-TYPE UTILIZATION ─── -->
+    <div class="section-title">
+        ⚙️ Work-Type Utilization
+        <span class="count">{{ aggregates.executive.total_tasks }} tasks</span>
+        <span class="line"></span>
+    </div>
 
-    // 1. Work-Type Chart (Doughnut with Click-to-Filter)
-    const ctxWt = document.getElementById('workTypeChart');
-    if (ctxWt) {
-        chartWt = new Chart(ctxWt, {
-            type: 'doughnut',
-            data: {
-                labels: workTypeData.map(d => d.work_type),
-                datasets: [{
-                    data: workTypeData.map(d => d.actual_hrs),
-                    backgroundColor: palette.slice(0, workTypeData.length),
-                    borderWidth: 2,
-                    borderColor: document.documentElement.getAttribute('data-theme') === 'dark' ? '#131d35' : '#ffffff'
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                onClick: (evt, elements) => {
-                    if (elements && elements.length > 0) {
-                        const idx = elements[0].index;
-                        const label = workTypeData[idx].work_type;
-                        applyCrossFilter('Work Type', label);
-                    }
-                },
-                plugins: {
-                    legend: { position: 'right', labels: { boxWidth: 12, font: { family: 'Inter', size: 11 }, color: getTextColor() } },
-                    tooltip: {
-                        callbacks: {
-                            label: function(c) {
-                                const totalAct = defaultTotals.actual_hrs > 0 ? defaultTotals.actual_hrs : 1;
-                                const pct = ((c.raw / totalAct) * 100).toFixed(1);
-                                return ` ${c.label}: ${c.raw} hrs (${pct}%) - Click to filter`;
-                            }
-                        }
-                    }
-                },
-                cutout: '62%'
-            }
-        });
-    }
+    <!-- Visual Stacked Progress Bar -->
+    {% if aggregates.by_work_type %}
+    <div style="margin-bottom: 16px;">
+        <div style="height: 12px; border-radius: 8px; background: #e2e8f0; display: flex; overflow: hidden;">
+            {% set colors = ['#2563eb', '#7c3aed', '#dc2626', '#059669', '#d97706', '#64748b'] %}
+            {% for wt in aggregates.by_work_type %}
+            <div style="width: {{ wt.share_pct }}%; background: {{ colors[loop.index0 % colors|length] }};" title="{{ wt.work_type }}: {{ wt.actual_hrs }} hrs ({{ wt.share_pct }}%)"></div>
+            {% endfor %}
+        </div>
+        <div style="display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: #475569;">
+            {% for wt in aggregates.by_work_type %}
+            <div style="display: flex; align-items: center; gap: 6px;">
+                <span style="width: 10px; height: 10px; border-radius: 3px; background: {{ colors[loop.index0 % colors|length] }}; display: inline-block;"></span>
+                <span><strong>{{ wt.work_type }}</strong>: {{ wt.share_pct }}% ({{ wt.actual_hrs }} hrs)</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
 
-    // 2. Resource Hours: Planned vs Actual (Grouped Horizontal Bar with Click-to-Inspect)
-    const ctxEmp = document.getElementById('resourceHoursChart');
-    if (ctxEmp) {
-        chartEmp = new Chart(ctxEmp, {
-            type: 'bar',
-            data: {
-                labels: employeeData.map(d => d.employee),
-                datasets: [
-                    {
-                        label: 'Planned Expected (hrs)',
-                        data: employeeData.map(d => d.expected_hrs),
-                        backgroundColor: '#94a3b8',
-                        borderRadius: 4
-                    },
-                    {
-                        label: 'Actual Logged (hrs)',
-                        data: employeeData.map(d => d.actual_hrs),
-                        backgroundColor: '#2563eb',
-                        borderRadius: 4
-                    }
-                ]
-            },
-            options: {
-                indexAxis: 'y',
-                responsive: true,
-                maintainAspectRatio: false,
-                onClick: (evt, elements) => {
-                    if (elements && elements.length > 0) {
-                        const idx = elements[0].index;
-                        const empName = employeeData[idx].employee;
-                        openEmployeeDrawer(empName);
-                    }
-                },
-                plugins: {
-                    legend: { position: 'top', labels: { boxWidth: 12, font: { family: 'Inter', size: 11 }, color: getTextColor() } },
-                    tooltip: {
-                        callbacks: {
-                            afterBody: function() {
-                                return '💡 Click bar to view detailed engineer deep-dive';
-                            }
-                        }
-                    }
-                },
-                scales: {
-                    x: { grid: { color: getGridColor() }, ticks: { color: getTextColor() }, title: { display: true, text: 'Hours', color: getTextColor() } },
-                    y: { grid: { display: false }, ticks: { color: getTextColor() } }
-                }
-            }
-        });
-    }
-
-    // 3. Top Services Chart (Bar with Click-to-Filter)
-    const ctxSrv = document.getElementById('serviceChart');
-    if (ctxSrv) {
-        const topSrv = serviceData.slice(0, 7);
-        chartSrv = new Chart(ctxSrv, {
-            type: 'bar',
-            data: {
-                labels: topSrv.map(d => d.service),
-                datasets: [{
-                    label: 'Actual Effort (hrs)',
-                    data: topSrv.map(d => d.actual_hrs),
-                    backgroundColor: '#0ea5e9',
-                    borderRadius: 6
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                onClick: (evt, elements) => {
-                    if (elements && elements.length > 0) {
-                        const idx = elements[0].index;
-                        const srvName = topSrv[idx].service;
-                        applyCrossFilter(entityLabel, srvName);
-                    }
-                },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        callbacks: {
-                            afterBody: () => '💡 Click to filter tables by this entity'
-                        }
-                    }
-                },
-                scales: {
-                    y: { grid: { color: getGridColor() }, ticks: { color: getTextColor() }, title: { display: true, text: 'Hours Logged', color: getTextColor() } },
-                    x: { grid: { display: false }, ticks: { color: getTextColor() } }
-                }
-            }
-        });
-    }
-
-    // 4. Weekly Trend Chart (Line)
-    const ctxWeek = document.getElementById('weeklyTrendChart');
-    if (ctxWeek) {
-        chartWeek = new Chart(ctxWeek, {
-            type: 'line',
-            data: {
-                labels: weeklyData.map(d => d.week),
-                datasets: [
-                    {
-                        label: 'Actual Hours',
-                        data: weeklyData.map(d => d.actual_hrs),
-                        borderColor: '#2563eb',
-                        backgroundColor: 'rgba(37, 99, 235, 0.08)',
-                        fill: true,
-                        tension: 0.3,
-                        pointRadius: 5,
-                        pointHoverRadius: 7
-                    },
-                    {
-                        label: 'Planned Hours',
-                        data: weeklyData.map(d => d.expected_hrs),
-                        borderColor: '#94a3b8',
-                        borderDash: [5, 5],
-                        fill: false,
-                        tension: 0.3,
-                        pointRadius: 4
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { position: 'top', labels: { boxWidth: 12, font: { family: 'Inter', size: 11 }, color: getTextColor() } }
-                },
-                scales: {
-                    y: { grid: { color: getGridColor() }, ticks: { color: getTextColor() }, title: { display: true, text: 'Hours', color: getTextColor() } },
-                    x: { grid: { display: false }, ticks: { color: getTextColor() } }
-                }
-            }
-        });
-    }
-
-    // Adapt Chart colors on theme change
-    window.onThemeChanged = function(theme) {
-        const gc = getGridColor();
-        const tc = getTextColor();
-        [chartWt, chartEmp, chartSrv, chartWeek].forEach(ch => {
-            if (!ch) return;
-            if (ch.options.scales) {
-                Object.values(ch.options.scales).forEach(scale => {
-                    if (scale.grid) scale.grid.color = gc;
-                    if (scale.ticks) scale.ticks.color = tc;
-                    if (scale.title) scale.title.color = tc;
-                });
-            }
-            if (ch.options.plugins && ch.options.plugins.legend && ch.options.plugins.legend.labels) {
-                ch.options.plugins.legend.labels.color = tc;
-            }
-            ch.update();
-        });
-    };
-
-    // -------------------------------------------------------------
-    // 4b. Global Search & Timeframe Slicer System
-    // -------------------------------------------------------------
-    function onGlobalSearch(query) {
-        filterAllTables(query);
-    }
-
-    document.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-            e.preventDefault();
-            const input = document.getElementById('globalSearchInput');
-            if (input) {
-                input.focus();
-                input.select();
-            }
-        }
-    });
-
-    let activeWeek = 'all';
-    function selectWeek(weekName) {
-        activeWeek = weekName;
-        document.querySelectorAll('.slicer-btn').forEach(btn => btn.classList.remove('active'));
-
-        if (weekName === 'all') {
-            const btnAll = document.getElementById('btnWeek_all');
-            if (btnAll) btnAll.classList.add('active');
-
-            // Reset KPI cards
-            if (document.getElementById('kpiTasksVal')) document.getElementById('kpiTasksVal').innerText = defaultTotals.tasks;
-            if (document.getElementById('kpiExpectedVal')) document.getElementById('kpiExpectedVal').innerText = defaultTotals.expected_hrs;
-            if (document.getElementById('kpiActualVal')) document.getElementById('kpiActualVal').innerText = defaultTotals.actual_hrs;
-            if (document.getElementById('kpiVarianceVal')) document.getElementById('kpiVarianceVal').innerText = (defaultTotals.variance > 0 ? '+' : '') + defaultTotals.variance;
-            if (document.getElementById('kpiUtilVal')) document.getElementById('kpiUtilVal').innerText = defaultTotals.utilization_pct;
-            if (document.getElementById('kpiTasksSub')) document.getElementById('kpiTasksSub').innerText = 'Across ' + employeeData.length + ' engineers';
-
-            // Reset Charts
-            if (chartWt) {
-                chartWt.data.labels = workTypeData.map(d => d.work_type);
-                chartWt.data.datasets[0].data = workTypeData.map(d => d.actual_hrs);
-                chartWt.update();
-            }
-            if (chartEmp) {
-                chartEmp.data.labels = employeeData.map(d => d.employee);
-                chartEmp.data.datasets[0].data = employeeData.map(d => d.expected_hrs);
-                chartEmp.data.datasets[1].data = employeeData.map(d => d.actual_hrs);
-                chartEmp.update();
-            }
-            if (chartSrv) {
-                const topS = serviceData.slice(0, 7);
-                chartSrv.data.labels = topS.map(d => d.service);
-                chartSrv.data.datasets[0].data = topS.map(d => d.actual_hrs);
-                chartSrv.update();
-            }
-
-            filterAllTables('');
-            renderSlicedTables(workTypeData, employeeData, serviceData, true);
-        } else {
-            const btns = Array.from(document.querySelectorAll('.slicer-btn'));
-            const targetBtn = btns.find(b => b.innerText.trim() === weekName);
-            if (targetBtn) targetBtn.classList.add('active');
-
-            const wBreakdown = aggregatesData.by_week_breakdown && aggregatesData.by_week_breakdown[weekName];
-            if (wBreakdown) {
-                if (document.getElementById('kpiTasksVal')) document.getElementById('kpiTasksVal').innerText = wBreakdown.totals.tasks;
-                if (document.getElementById('kpiExpectedVal')) document.getElementById('kpiExpectedVal').innerText = wBreakdown.totals.expected_hrs;
-                if (document.getElementById('kpiActualVal')) document.getElementById('kpiActualVal').innerText = wBreakdown.totals.actual_hrs;
-                if (document.getElementById('kpiVarianceVal')) document.getElementById('kpiVarianceVal').innerText = (wBreakdown.totals.variance > 0 ? '+' : '') + wBreakdown.totals.variance;
-                if (document.getElementById('kpiUtilVal')) document.getElementById('kpiUtilVal').innerText = wBreakdown.totals.utilization_pct;
-                if (document.getElementById('kpiTasksSub')) document.getElementById('kpiTasksSub').innerText = `During ${weekName} (${wBreakdown.totals.active_resources} active)`;
-
-                if (chartWt && wBreakdown.by_work_type) {
-                    chartWt.data.labels = wBreakdown.by_work_type.map(d => d.work_type);
-                    chartWt.data.datasets[0].data = wBreakdown.by_work_type.map(d => d.actual_hrs);
-                    chartWt.update();
-                }
-                if (chartEmp && wBreakdown.by_employee) {
-                    chartEmp.data.labels = wBreakdown.by_employee.map(d => d.employee);
-                    chartEmp.data.datasets[0].data = wBreakdown.by_employee.map(d => d.expected_hrs);
-                    chartEmp.data.datasets[1].data = wBreakdown.by_employee.map(d => d.actual_hrs);
-                    chartEmp.update();
-                }
-                if (chartSrv && wBreakdown.by_service) {
-                    const topS = wBreakdown.by_service.slice(0, 7);
-                    chartSrv.data.labels = topS.map(d => d.service);
-                    chartSrv.data.datasets[0].data = topS.map(d => d.actual_hrs);
-                    chartSrv.update();
-                }
-
-                renderSlicedTables(wBreakdown.by_work_type, wBreakdown.by_employee, wBreakdown.by_service, false);
-            }
-        }
-    }
-
-    function renderSlicedTables(wtList, empList, srvList, isAll) {
-        const wtBody = document.querySelector('#workTypeTable tbody');
-        if (wtBody && wtList) {
-            let html = '';
-            let sumTasks = 0, sumExp = 0, sumAct = 0;
-            wtList.forEach(wt => {
-                sumTasks += wt.tasks;
-                sumExp += wt.expected_hrs;
-                sumAct += wt.actual_hrs;
-                const varText = (wt.variance > 0 ? '+' : '') + wt.variance.toFixed(1);
-                const varClass = wt.variance > 0 ? 'text-danger font-bold' : 'text-success';
-                html += `
-                    <tr class="row-clickable" onclick="applyCrossFilter('Work Type', '${wt.work_type}')" title="Click to filter by ${wt.work_type}">
-                        <td><strong>${wt.work_type}</strong></td>
-                        <td class="text-right">${wt.tasks}</td>
-                        <td class="text-right">${wt.expected_hrs.toFixed(1)}</td>
-                        <td class="text-right">${wt.actual_hrs.toFixed(1)}</td>
-                        <td class="text-right">${wt.share_pct}%</td>
-                        <td class="text-right ${varClass}">${varText}</td>
-                    </tr>
-                `;
-            });
-            const sumVar = sumAct - sumExp;
-            const sumVarText = (sumVar > 0 ? '+' : '') + sumVar.toFixed(1);
-            const sumVarClass = sumVar > 0 ? 'text-danger font-bold' : 'text-success';
-            html += `
-                <tr class="tr-total">
-                    <td><strong>Total</strong></td>
-                    <td class="text-right"><strong>${sumTasks}</strong></td>
-                    <td class="text-right"><strong>${sumExp.toFixed(1)}</strong></td>
-                    <td class="text-right"><strong>${sumAct.toFixed(1)}</strong></td>
-                    <td class="text-right"><strong>100.0%</strong></td>
-                    <td class="text-right ${sumVarClass}">${sumVarText}</td>
+    <div class="table-wrap">
+        <table class="exec-table">
+            <thead>
+                <tr>
+                    <th>Work Type</th>
+                    <th>Tasks</th>
+                    <th>Expected Hrs</th>
+                    <th>Actual Hrs</th>
+                    <th>Share %</th>
+                    <th>Variance</th>
                 </tr>
-            `;
-            wtBody.innerHTML = html;
-        }
-
-        const empBody = document.querySelector('#resourceTable tbody');
-        if (empBody && empList) {
-            let html = '';
-            empList.forEach(emp => {
-                const isOver = emp.utilization_pct >= 110;
-                const varText = (emp.variance > 0 ? '+' : '') + emp.variance.toFixed(1);
-                const badgeClass = isOver ? 'badge-danger' : (emp.utilization_pct >= 95 ? 'badge-info' : 'badge-light');
-                const st = emp.status_counts || {};
-                html += `
-                    <tr class="row-clickable ${isOver ? 'row-overloaded' : ''}" onclick="openEmployeeDrawer('${emp.employee}')" data-emp="${emp.employee}" data-util="${emp.utilization_pct}" title="Click for ${emp.employee} deep-dive breakdown">
-                        <td><strong>${emp.employee}</strong></td>
-                        <td class="text-right">${emp.tasks}</td>
-                        <td class="text-right">${emp.expected_hrs.toFixed(1)}</td>
-                        <td class="text-right">${emp.actual_hrs.toFixed(1)}</td>
-                        <td class="text-right col-var ${emp.variance > 0 ? 'text-danger font-bold' : 'text-success'}">${varText}</td>
-                        <td class="text-right col-util"><span class="badge ${badgeClass}">${emp.utilization_pct}%</span></td>
-                        <td class="text-right">${st.Completed || 0}</td>
-                        <td class="text-right">${st['In Progress'] || 0}</td>
-                        <td class="text-right">${st.Pending || 0}</td>
+            </thead>
+            <tbody>
+                {% if aggregates.by_work_type %}
+                    {% for wt in aggregates.by_work_type %}
+                    <tr>
+                        <td><strong>{{ wt.work_type }}</strong></td>
+                        <td>{{ wt.tasks }}</td>
+                        <td>{{ wt.expected_hrs }}</td>
+                        <td><strong>{{ wt.actual_hrs }}</strong></td>
+                        <td>{{ wt.share_pct }}%</td>
+                        <td style="font-weight: 600; color: {% if wt.variance > 0 %}#dc2626{% else %}#059669{% endif %};">
+                            {% if wt.variance > 0 %}+{% endif %}{{ wt.variance }}
+                        </td>
                     </tr>
-                `;
-            });
-            empBody.innerHTML = html;
-        }
-
-        const srvBody = document.querySelector('#serviceTable tbody');
-        if (srvBody && srvList) {
-            let html = '';
-            srvList.forEach(srv => {
-                const varText = (srv.variance > 0 ? '+' : '') + srv.variance.toFixed(1);
-                const varClass = srv.variance > 0 ? 'text-danger font-bold' : 'text-success';
-                const attBadge = srv.attention_level === 'Very High' ? 'badge-danger' : (srv.attention_level === 'High' ? 'badge-warning' : (srv.attention_level === 'Medium' ? 'badge-info' : 'badge-neutral'));
-                html += `
-                    <tr class="row-clickable" onclick="applyCrossFilter('${entityLabel}', '${srv.service}')" title="Click to filter by ${srv.service}">
-                        <td><strong>${srv.service}</strong></td>
-                        <td class="text-right">${srv.tasks}</td>
-                        <td class="text-right">${srv.expected_hrs.toFixed(1)}</td>
-                        <td class="text-right">${srv.actual_hrs.toFixed(1)}</td>
-                        <td class="text-right ${varClass}">${varText}</td>
-                        <td class="text-right">${srv.share_pct}%</td>
-                        <td class="text-right"><span class="badge ${attBadge}">${srv.attention_level || 'Normal'}</span></td>
+                    {% endfor %}
+                    <tr class="row-total">
+                        <td>Total</td>
+                        <td>{{ aggregates.totals.tasks }}</td>
+                        <td>{{ aggregates.totals.expected_hrs }}</td>
+                        <td>{{ aggregates.totals.actual_hrs }}</td>
+                        <td>100.0%</td>
+                        <td>{% if aggregates.totals.variance > 0 %}+{% endif %}{{ aggregates.totals.variance }}</td>
                     </tr>
-                `;
-            });
-            srvBody.innerHTML = html;
-        }
-    }
+                {% else %}
+                    <tr>
+                        <td colspan="6" style="text-align: center; color: #64748b; padding: 28px 16px;">
+                            <div style="font-weight: 600; margin-bottom: 4px;">No timesheet records loaded yet</div>
+                            <div style="font-size: 12px;">Upload an Excel/CSV file to calculate work-type distributions.</div>
+                        </td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
 
-    // Workload Rebalancing Simulation
-    let isRebalanceSimulated = false;
-    function toggleRebalanceSimulation() {
-        if (!varianceData.burnout_analysis || !varianceData.burnout_analysis.rebalance_suggestions) return;
-        const btn = document.getElementById('btnToggleSimulate');
-        isRebalanceSimulated = !isRebalanceSimulated;
+    <!-- ─── 2. RESOURCE-WISE UTILIZATION ─── -->
+    <div class="section-title">
+        👤 Resource-wise Utilization
+        <span class="count">{{ aggregates.by_employee|length }} resources</span>
+        <span class="line"></span>
+    </div>
 
-        if (isRebalanceSimulated) {
-            btn.innerText = 'Reset Actuals';
-            btn.classList.add('active');
-            btn.style.background = '#2563eb';
-            btn.style.color = '#ffffff';
+    <div class="table-wrap">
+        <table class="exec-table" id="resourceTable">
+            <thead>
+                <tr>
+                    <th>Resource Name</th>
+                    <th>Tasks</th>
+                    <th>Universities</th>
+                    <th>Actual Hrs</th>
+                    <th>Capacity Util.</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if aggregates.by_employee %}
+                    {% for emp in aggregates.by_employee %}
+                    <tr>
+                        <td><strong>{{ emp.employee }}</strong></td>
+                        <td>{{ emp.tasks }}</td>
+                        <td>{{ emp.universities_count or 1 }}</td>
+                        <td><strong>{{ emp.actual_hrs }}</strong></td>
+                        <td>
+                            <strong style="color: {% if emp.utilization_pct > 100 %}#dc2626{% elif emp.utilization_pct >= 80 %}#059669{% else %}#b45309{% endif %};">
+                                {{ emp.utilization_pct }}%
+                            </strong>
+                        </td>
+                        <td>
+                            <span class="status-badge {{ emp.status or 'optimal' }}">
+                                {{ emp.status_label or (emp.utilization_pct ~ '%') }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    <tr class="row-total">
+                        <td>Total / Average</td>
+                        <td>{{ aggregates.totals.tasks }}</td>
+                        <td>—</td>
+                        <td>{{ aggregates.totals.actual_hrs }}</td>
+                        <td>{{ aggregates.totals.utilization_pct }}%</td>
+                        <td>—</td>
+                    </tr>
+                {% else %}
+                    <tr>
+                        <td colspan="6" style="text-align: center; color: #64748b; padding: 28px 16px;">
+                            <div style="font-weight: 600; margin-bottom: 4px;">No team member records available</div>
+                            <div style="font-size: 12px;">Individual capacity and effort tracking will appear upon timesheet ingestion.</div>
+                        </td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
 
-            const simMap = {};
-            employeeData.forEach(e => { simMap[e.employee] = e.actual_hrs; });
-            varianceData.burnout_analysis.rebalance_suggestions.forEach(sug => {
-                simMap[sug.from_resource] = sug.from_after;
-                simMap[sug.to_resource] = sug.to_after;
-            });
-            if (chartEmp) {
-                chartEmp.data.datasets[1].data = employeeData.map(e => simMap[e.employee] ?? e.actual_hrs);
-                chartEmp.data.datasets[1].label = 'Simulated Rebalanced Effort (hrs)';
-                chartEmp.update();
-            }
-        } else {
-            btn.innerText = 'Simulate Impact';
-            btn.classList.remove('active');
-            btn.style.background = '';
-            btn.style.color = '';
-            if (chartEmp) {
-                chartEmp.data.datasets[1].data = employeeData.map(e => e.actual_hrs);
-                chartEmp.data.datasets[1].label = 'Actual Logged (hrs)';
-                chartEmp.update();
-            }
-        }
-    }
+    <!-- ─── 3. SERVICE-WISE UTILIZATION CHIPS ─── -->
+    <div class="section-title">
+        🏛️ Service-wise Utilization &bull; Hours &amp; Percentage
+        <span class="count">{{ aggregates.by_service|length }} services</span>
+        <span class="line"></span>
+    </div>
 
-    // -------------------------------------------------------------
-    // 5. Interactive Cross-Filtering System
-    // -------------------------------------------------------------
-    let activeFilter = null;
+    {% if aggregates.by_service %}
+    <div class="service-summary-grid">
+        {% for s in aggregates.by_service %}
+        <div class="service-summary-item">
+            <span class="svc-name">{{ s.service }}</span>
+            <span><span class="svc-hours">{{ s.actual_hrs }}</span> <span class="svc-share">({{ s.share_pct }}%)</span></span>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div style="text-align: center; color: #64748b; padding: 18px; background: #f8fafc; border-radius: 12px; border: 1px dashed #cbd5e1; margin: 12px 0 20px 0; font-size: 13px;">
+        No service or client allocations recorded yet.
+    </div>
+    {% endif %}
 
-    function applyCrossFilter(category, value) {
-        activeFilter = { category, value };
-        const bar = document.getElementById('activeFilterBar');
-        const badge = document.getElementById('filterBadgeText');
-        if (badge) badge.innerText = `${category}: ${value}`;
-        if (bar) bar.style.display = 'flex';
+    <!-- ─── 4. SERVICE-WISE MULTI-WEEK MATRIX TABLE ─── -->
+    {% if aggregates.service_grid_rows %}
+    <div style="font-size: 14px; font-weight: 700; color: #0f172a; margin: 20px 0 10px 0;">
+        📅 Weekly Breakdown by Work Type (S=Support, N=New Dev, I=Issue, E=Enhancement, O=Other)
+    </div>
+    <div class="table-wrap">
+        <table class="exec-table service-matrix-table">
+            <thead>
+                <tr>
+                    <th rowspan="2" style="vertical-align: middle; background: #f1f5f9;">University</th>
+                    {% for w in aggregates.ordered_weeks %}
+                    <th colspan="5" style="background: #f1f5f9; border-left: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0;">{{ w }}</th>
+                    {% endfor %}
+                    <th colspan="6" style="background: #e2e8f0;">Monthly Total</th>
+                </tr>
+                <tr style="font-size: 10.5px;">
+                    {% for w in aggregates.ordered_weeks %}
+                    <th style="border-left: 1px solid #e2e8f0;">S</th><th>N</th><th>I</th><th>E</th><th>O</th>
+                    {% endfor %}
+                    <th style="background: #e2e8f0; border-left: 1px solid #cbd5e1;">S</th>
+                    <th style="background: #e2e8f0;">N</th>
+                    <th style="background: #e2e8f0;">I</th>
+                    <th style="background: #e2e8f0;">E</th>
+                    <th style="background: #e2e8f0;">O</th>
+                    <th style="background: #cbd5e1; font-weight: 800;">Tot</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in aggregates.service_grid_rows %}
+                <tr>
+                    <td><strong>{{ row.service }}</strong></td>
+                    {% for w in aggregates.ordered_weeks %}
+                    {% set w_data = row.weeks.get(w, {}) %}
+                    <td style="border-left: 1px solid #f1f5f9;">{{ w_data.get('Support', 0) }}</td>
+                    <td>{{ w_data.get('New Development', 0) }}</td>
+                    <td>{{ w_data.get('Issue', 0) }}</td>
+                    <td>{{ w_data.get('Enhancement', 0) }}</td>
+                    <td>{{ w_data.get('Other / Meeting', 0) }}</td>
+                    {% endfor %}
+                    <td style="background: #f8fafc; border-left: 1px solid #e2e8f0; font-weight: 600;">{{ row.monthly.get('Support', 0) }}</td>
+                    <td style="background: #f8fafc; font-weight: 600;">{{ row.monthly.get('New Development', 0) }}</td>
+                    <td style="background: #f8fafc; font-weight: 600;">{{ row.monthly.get('Issue', 0) }}</td>
+                    <td style="background: #f8fafc; font-weight: 600;">{{ row.monthly.get('Enhancement', 0) }}</td>
+                    <td style="background: #f8fafc; font-weight: 600;">{{ row.monthly.get('Other / Meeting', 0) }}</td>
+                    <td style="background: #e2e8f0; font-weight: 800; color: #1e40af;">{{ row.monthly.get('total', 0) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
 
-        filterAllTables(value);
-    }
+    <!-- ─── 5. UNIVERSITY / CLIENT SUMMARY TABLE ─── -->
+    <div class="section-title">
+        🏫 University / Client Workload Summary
+        <span class="count">{{ aggregates.by_service|length }} entities</span>
+        <span class="line"></span>
+    </div>
 
-    function clearCrossFilter() {
-        activeFilter = null;
-        const bar = document.getElementById('activeFilterBar');
-        if (bar) bar.style.display = 'none';
-        const searchInput = document.getElementById('globalSearchInput');
-        if (searchInput) searchInput.value = '';
-        filterAllTables('');
-    }
+    <div class="table-wrap">
+        <table class="exec-table">
+            <thead>
+                <tr>
+                    <th>University / Client</th>
+                    <th>Tasks</th>
+                    <th>Expected Hrs</th>
+                    <th>Actual Hrs</th>
+                    <th>Share %</th>
+                    <th>Attention Level</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if aggregates.by_service %}
+                    {% for s in aggregates.by_service %}
+                    <tr>
+                        <td><strong>{{ s.service }}</strong></td>
+                        <td>{{ s.tasks }}</td>
+                        <td>{{ s.expected_hrs }}</td>
+                        <td><strong>{{ s.actual_hrs }}</strong></td>
+                        <td>{{ s.share_pct }}%</td>
+                        <td>
+                            <span class="pill-badge {% if s.attention_level == 'Very High' %}primary{% elif s.attention_level == 'High' %}warning{% else %}secondary{% endif %}" style="font-size: 11px;">
+                                {{ s.attention_level }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="6" style="text-align: center; color: #64748b; padding: 28px 16px;">
+                            <div style="font-weight: 600; margin-bottom: 4px;">No client or university records found</div>
+                            <div style="font-size: 12px;">Client workload distribution will be calculated automatically upon upload.</div>
+                        </td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
 
-    function filterAllTables(query) {
-        const q = (query || '').toLowerCase().trim();
-        const tables = document.querySelectorAll('.data-table tbody');
-        tables.forEach(tbody => {
-            const rows = tbody.querySelectorAll('tr:not(.tr-total):not(.tr-empty-search)');
-            let visibleCount = 0;
-            rows.forEach(r => {
-                const text = r.innerText.toLowerCase();
-                if (!q || text.includes(q)) {
-                    r.style.display = '';
-                    visibleCount++;
-                } else {
-                    r.style.display = 'none';
-                }
-            });
+    <!-- ─── 6. WEEKLY UTILIZATION PROGRESSION ─── -->
+    <div class="section-title">
+        📈 Weekly Resource Utilization Trend
+        <span class="line"></span>
+    </div>
 
-            // Handle empty search feedback row
-            let emptyRow = tbody.querySelector('.tr-empty-search');
-            if (visibleCount === 0 && q) {
-                if (!emptyRow) {
-                    emptyRow = document.createElement('tr');
-                    emptyRow.className = 'tr-empty-search';
-                    const colCount = tbody.closest('table').querySelectorAll('thead th').length || 6;
-                    emptyRow.innerHTML = `<td colspan="${colCount}" class="text-center text-muted p-4">No matching records found for "${query}". <a href="javascript:void(0)" onclick="clearCrossFilter()" style="color: var(--primary); text-decoration: underline; margin-left: 6px;">Clear Filter</a></td>`;
-                    tbody.appendChild(emptyRow);
-                }
-                emptyRow.style.display = '';
-            } else if (emptyRow) {
-                emptyRow.style.display = 'none';
-            }
-        });
-    }
+    <div class="table-wrap">
+        <table class="exec-table">
+            <thead>
+                <tr>
+                    <th>Week Period</th>
+                    <th>Tasks</th>
+                    <th>Active Resources</th>
+                    <th>Expected Hrs</th>
+                    <th>Actual Hrs</th>
+                    <th>Actual vs Expected</th>
+                    <th>Capacity Util.</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if aggregates.by_week %}
+                    {% for w in aggregates.by_week %}
+                    <tr>
+                        <td><strong>{{ w.week }}</strong></td>
+                        <td>{{ w.tasks }}</td>
+                        <td>{{ w.active_resources }}</td>
+                        <td>{{ w.expected_hrs }}</td>
+                        <td><strong>{{ w.actual_hrs }}</strong></td>
+                        <td>{{ w.ratio }}</td>
+                        <td>
+                            <strong style="color: {% if w.utilization_pct > 90 %}#dc2626{% elif w.utilization_pct >= 75 %}#059669{% else %}#475569{% endif %};">
+                                {{ w.utilization_pct }}%
+                            </strong>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="7" style="text-align: center; color: #64748b; padding: 28px 16px;">
+                            <div style="font-weight: 600; margin-bottom: 4px;">No weekly progression recorded</div>
+                            <div style="font-size: 12px;">Weekly cadence trend analysis will display here after timesheet ingestion.</div>
+                        </td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
 
-    // -------------------------------------------------------------
-    // 6. Live Capacity Overload Threshold Simulator
-    // -------------------------------------------------------------
-    function updateOverloadThreshold(val) {
-        const threshold = parseFloat(val);
-        document.getElementById('sliderValueDisplay').innerText = threshold + '%';
-        document.getElementById('threshLabelVal').innerText = threshold;
+    <!-- ─── 7. OVERLOAD RADAR CARDS ─── -->
+    <div class="section-title">
+        🚨 Most Overloaded Work
+        <span class="count">Radar Analysis</span>
+        <span class="line"></span>
+    </div>
 
-        let overloadCount = 0;
-        const empRows = document.querySelectorAll('#resourceTable tbody tr:not(.tr-total)');
-        empRows.forEach(r => {
-            const util = parseFloat(r.getAttribute('data-util') || 0);
-            const utilBadge = r.querySelector('.col-util .badge');
-            const varCol = r.querySelector('.col-var');
+    <div class="radar-grid">
+        {% if aggregates.by_service|length >= 1 %}
+        <div class="radar-card">
+            <div class="radar-type">Top Service</div>
+            <div class="radar-title" style="color: #dc2626;">{{ aggregates.by_service[0].service }}</div>
+            <div class="radar-sub">{{ aggregates.by_service[0].actual_hrs }} hrs &bull; {{ aggregates.by_service[0].share_pct }}%</div>
+            <div class="radar-bar-bg"><div class="radar-bar-fill" style="width: {{ aggregates.by_service[0].share_pct }}%; background: #dc2626;"></div></div>
+        </div>
+        {% endif %}
 
-            if (util >= threshold) {
-                overloadCount++;
-                r.classList.add('row-overloaded');
-                if (utilBadge) {
-                    utilBadge.className = 'badge badge-danger';
-                }
-                if (varCol) varCol.classList.add('text-danger', 'font-bold');
-            } else {
-                r.classList.remove('row-overloaded');
-                if (utilBadge) {
-                    utilBadge.className = util >= 95 ? 'badge badge-info' : 'badge badge-light';
-                }
-                if (varCol) varCol.classList.remove('text-danger', 'font-bold');
-            }
-        });
+        {% if aggregates.by_service|length >= 2 %}
+        <div class="radar-card">
+            <div class="radar-type">Secondary Service</div>
+            <div class="radar-title" style="color: #d97706;">{{ aggregates.by_service[1].service }}</div>
+            <div class="radar-sub">{{ aggregates.by_service[1].actual_hrs }} hrs &bull; {{ aggregates.by_service[1].share_pct }}%</div>
+            <div class="radar-bar-bg"><div class="radar-bar-fill" style="width: {{ aggregates.by_service[1].share_pct }}%; background: #d97706;"></div></div>
+        </div>
+        {% endif %}
 
-        document.getElementById('overloadCountVal').innerText = overloadCount;
-        const card = document.getElementById('overloadKpiCard');
-        if (card) {
-            if (overloadCount > 0) {
-                card.classList.add('kpi-alert');
-                card.classList.remove('kpi-success');
-            } else {
-                card.classList.remove('kpi-alert');
-                card.classList.add('kpi-success');
-            }
-        }
-    }
+        {% if aggregates.by_employee|length >= 1 %}
+        <div class="radar-card">
+            <div class="radar-type">Top Resource</div>
+            <div class="radar-title" style="color: #dc2626;">{{ aggregates.by_employee[0].employee }}</div>
+            <div class="radar-sub">{{ aggregates.by_employee[0].actual_hrs }} hrs &bull; {{ aggregates.by_employee[0].utilization_pct }}%</div>
+            <div class="radar-bar-bg"><div class="radar-bar-fill" style="width: 100%; background: #dc2626;"></div></div>
+        </div>
+        {% endif %}
 
-    // -------------------------------------------------------------
-    // 7. Employee Deep-Dive Drawer Modal
-    // -------------------------------------------------------------
-    function openEmployeeDrawer(empName) {
-        const emp = employeeData.find(e => e.employee === empName);
-        if (!emp) return;
+        {% if aggregates.by_employee|length >= 2 %}
+        <div class="radar-card">
+            <div class="radar-type">Secondary Resource</div>
+            <div class="radar-title" style="color: #d97706;">{{ aggregates.by_employee[1].employee }}</div>
+            <div class="radar-sub">{{ aggregates.by_employee[1].actual_hrs }} hrs &bull; {{ aggregates.by_employee[1].utilization_pct }}%</div>
+            <div class="radar-bar-bg"><div class="radar-bar-fill" style="width: 100%; background: #d97706;"></div></div>
+        </div>
+        {% endif %}
 
-        document.getElementById('drawerEmpName').innerText = emp.employee;
-        document.getElementById('drawerEmpSub').innerText = `${emp.tasks} Tasks Logged • ${emp.actual_hrs} hrs Logged`;
-        document.getElementById('drawerTasks').innerText = emp.tasks;
-        document.getElementById('drawerExpHrs').innerText = emp.expected_hrs + ' hrs';
-        document.getElementById('drawerActHrs').innerText = emp.actual_hrs + ' hrs';
+        {% if aggregates.by_work_type|length >= 1 %}
+        <div class="radar-card">
+            <div class="radar-type">Primary Work Type</div>
+            <div class="radar-title" style="color: #2563eb;">{{ aggregates.by_work_type[0].work_type }}</div>
+            <div class="radar-sub">{{ aggregates.by_work_type[0].actual_hrs }} hrs &bull; {{ aggregates.by_work_type[0].share_pct }}%</div>
+            <div class="radar-bar-bg"><div class="radar-bar-fill" style="width: {{ aggregates.by_work_type[0].share_pct }}%; background: #2563eb;"></div></div>
+        </div>
+        {% endif %}
 
-        const utilElem = document.getElementById('drawerUtilPct');
-        utilElem.innerText = emp.utilization_pct + '%';
-        utilElem.style.color = emp.utilization_pct >= 110 ? '#dc2626' : (emp.utilization_pct >= 95 ? '#2563eb' : '#16a34a');
+        {% if aggregates.by_work_type|length >= 2 %}
+        <div class="radar-card">
+            <div class="radar-type">Secondary Work Type</div>
+            <div class="radar-title" style="color: #7c3aed;">{{ aggregates.by_work_type[1].work_type }}</div>
+            <div class="radar-sub">{{ aggregates.by_work_type[1].actual_hrs }} hrs &bull; {{ aggregates.by_work_type[1].share_pct }}%</div>
+            <div class="radar-bar-bg"><div class="radar-bar-fill" style="width: {{ aggregates.by_work_type[1].share_pct }}%; background: #7c3aed;"></div></div>
+        </div>
+        {% endif %}
 
-        // Status Pills
-        const statusDiv = document.getElementById('drawerStatusPills');
-        statusDiv.innerHTML = '';
-        const st = emp.status_counts || {};
-        for (const [sKey, sVal] of Object.entries(st)) {
-            const span = document.createElement('span');
-            span.className = sKey === 'Completed' ? 'badge badge-success' : (sKey === 'In Progress' ? 'badge badge-info' : 'badge badge-warning');
-            span.innerText = `${sKey}: ${sVal}`;
-            statusDiv.appendChild(span);
-        }
+        {% if not aggregates.by_service and not aggregates.by_employee %}
+        <div style="grid-column: 1 / -1; text-align: center; color: #64748b; padding: 24px; background: #f8fafc; border-radius: 14px; border: 1px dashed #cbd5e1; font-size: 13px;">
+            <strong>Overload Radar Calibrated:</strong> Baseline standing by. Ingest timesheet data to identify workload hotspots.
+        </div>
+        {% endif %}
+    </div>
 
-        // Cross Tab Data for this Employee
-        const empRows = crossTabData.filter(c => c.employee === empName);
-        const tbody = document.getElementById('drawerCrossBody');
-        tbody.innerHTML = '';
-        if (empRows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No cross-tab breakdown rows available</td></tr>';
-        } else {
-            empRows.forEach(item => {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td><strong>${item.service}</strong></td>
-                    <td>${item.task_type}</td>
-                    <td class="text-right">${item.tasks}</td>
-                    <td class="text-right font-bold">${item.actual_hrs}</td>
-                `;
-                tbody.appendChild(tr);
-            });
-        }
+    <!-- ─── 8. 5 POINTS THAT NEED IMMEDIATE ACTION ─── -->
+    <div class="section-title">
+        📌 5 Points That Need Immediate Action
+        <span class="line"></span>
+    </div>
 
-        document.getElementById('empDrawerBackdrop').classList.add('open');
-    }
+    <div class="action-grid">
+        {% for act in aggregates.action_points %}
+        <div class="action-card">
+            <div>
+                <div class="title">{{ act.title }}</div>
+                <div class="desc">{{ act.desc }}</div>
+            </div>
+            <div class="tag">{{ act.tag }}</div>
+        </div>
+        {% endfor %}
+    </div>
 
-    function closeEmployeeDrawer(event) {
-        if (event) event.stopPropagation();
-        document.getElementById('empDrawerBackdrop').classList.remove('open');
-    }
+    <!-- ─── 9. GEMINI AI EXECUTIVE INSIGHTS ─── -->
+    <div class="gemini-box">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <div style="width: 36px; height: 36px; border-radius: 10px; background: #2563eb; color: #ffffff; display: flex; align-items: center; justify-content: center;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                </div>
+                <div>
+                    <h3 style="margin: 0; font-size: 17px; font-weight: 700; color: #0f172a;">Gemini AI Executive Analysis</h3>
+                    <div style="font-size: 12px; color: #64748b;">Powered by Gemini API &bull; Automated Management Synthesis</div>
+                </div>
+            </div>
+            {% if report_id > 0 %}
+            <button type="button" class="btn btn-primary" onclick="document.getElementById('geminiModal').style.display='flex'" style="font-size: 12px; padding: 6px 14px;">
+                ⚡ Regenerate with Custom Gemini API Key
+            </button>
+            {% endif %}
+        </div>
 
-    // Close on Escape key
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') closeEmployeeDrawer();
-    });
+        <div style="font-size: 14px; line-height: 1.6; color: #334155; margin-bottom: 16px;">
+            {% if ai_insights.executive_summary %}
+                {{ ai_insights.executive_summary }}
+            {% else %}
+                Database is clean and ready. Upload your weekly or monthly timesheets to generate automated management commentary, risk detection, and resource allocation recommendations via Google Gemini AI.
+            {% endif %}
+        </div>
 
-    // -------------------------------------------------------------
-    // 8. 1-Click Table CSV Export
-    // -------------------------------------------------------------
-    function exportTableToCSV(tableId, filename) {
-        const table = document.getElementById(tableId);
-        if (!table) return;
-        const csv = [];
-        const rows = table.querySelectorAll('tr');
-        rows.forEach(row => {
-            if (row.style.display === 'none') return;
-            const cols = row.querySelectorAll('th, td');
-            const rowData = [];
-            cols.forEach(col => {
-                let text = col.innerText.replace(/"/g, '""').trim();
-                text = text.replace(/[▲▼⇅]/g, '').trim();
-                rowData.push(`"${text}"`);
-            });
-            csv.push(rowData.join(','));
-        });
-        const blob = new Blob([csv.join('\n')], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.setAttribute('download', filename || 'Report.csv');
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        if (typeof showToast === 'function') {
-            showToast('Table exported to CSV successfully.', 'success');
-        }
-    }
+        {% if ai_insights.key_findings %}
+        <div style="margin-bottom: 12px;">
+            <strong style="font-size: 13px; color: #0f172a; text-transform: uppercase; letter-spacing: 0.3px;">Key Governance Findings:</strong>
+            <ul style="margin: 6px 0 0 20px; padding: 0; font-size: 13px; color: #475569;">
+                {% for f in ai_insights.key_findings %}
+                <li style="margin-bottom: 4px;">{{ f }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
 
-    // -------------------------------------------------------------
-    // 9. Interactive Sortable Tables
-    // -------------------------------------------------------------
-    function initSortableTables() {
-        document.querySelectorAll('.data-table').forEach(table => {
-            const thead = table.querySelector('thead');
-            if (!thead) return;
-            const headers = thead.querySelectorAll('th');
-            headers.forEach((th, colIdx) => {
-                th.classList.add('sortable-th');
-                const icon = document.createElement('span');
-                icon.className = 'sort-icon';
-                icon.innerHTML = '⇅';
-                th.appendChild(icon);
+        {% if ai_insights.recommendations %}
+        <div>
+            <strong style="font-size: 13px; color: #0f172a; text-transform: uppercase; letter-spacing: 0.3px;">Actionable Recommendations:</strong>
+            <ul style="margin: 6px 0 0 20px; padding: 0; font-size: 13px; color: #475569;">
+                {% for r in ai_insights.recommendations %}
+                <li style="margin-bottom: 4px;">{{ r }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
 
-                th.addEventListener('click', () => {
-                    const tbody = table.querySelector('tbody');
-                    if (!tbody) return;
-                    const rows = Array.from(tbody.querySelectorAll('tr:not(.tr-total)'));
-                    const isAsc = !th.classList.contains('sorted-asc');
+</div>
 
-                    headers.forEach(h => {
-                        h.classList.remove('sorted-asc', 'sorted-desc');
-                        const ic = h.querySelector('.sort-icon');
-                        if (ic) ic.innerHTML = '⇅';
-                    });
-
-                    th.classList.toggle('sorted-asc', isAsc);
-                    th.classList.toggle('sorted-desc', !isAsc);
-                    icon.innerHTML = isAsc ? '▲' : '▼';
-
-                    rows.sort((a, b) => {
-                        const cellA = (a.children[colIdx]?.innerText || '').replace(/[%$,hrs]/gi, '').trim();
-                        const cellB = (b.children[colIdx]?.innerText || '').replace(/[%$,hrs]/gi, '').trim();
-                        const numA = parseFloat(cellA);
-                        const numB = parseFloat(cellB);
-                        if (!isNaN(numA) && !isNaN(numB)) {
-                            return isAsc ? numA - numB : numB - numA;
-                        }
-                        return isAsc ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
-                    });
-
-                    const totalRow = tbody.querySelector('.tr-total');
-                    rows.forEach(r => tbody.appendChild(r));
-                    if (totalRow) tbody.appendChild(totalRow);
-                });
-            });
-        });
-    }
-
-    // Initialize sortable tables on load
-    document.addEventListener('DOMContentLoaded', () => {
-        initSortableTables();
-    });
-</script>
+<!-- Gemini API Key Modal -->
+{% if report_id > 0 %}
+<div id="geminiModal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 999; align-items: center; justify-content: center; padding: 20px;">
+    <div style="background: #ffffff; border-radius: 18px; max-width: 480px; width: 100%; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); overflow: hidden;">
+        <div style="padding: 20px 24px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0; font-size: 18px; font-weight: 700; color: #0f172a;">Regenerate Gemini AI Insights</h3>
+            <button type="button" onclick="document.getElementById('geminiModal').style.display='none'" style="background: none; border: none; font-size: 20px; cursor: pointer; color: #64748b;">&times;</button>
+        </div>
+        <form action="/api/regenerate-ai" method="post" style="padding: 24px;">
+            <input type="hidden" name="report_id" value="{{ report_id }}">
+            <div class="form-group" style="margin-bottom: 16px;">
+                <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: #334155;">Gemini API Key</label>
+                <input type="password" name="gemini_api_key" placeholder="Enter your Gemini API key" class="form-control" style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #cbd5e1; font-family: monospace;">
+                <small style="display: block; font-size: 11px; color: #64748b; margin-top: 4px;">Provide your free Google Gemini API key or use default.</small>
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                <button type="button" onclick="document.getElementById('geminiModal').style.display='none'" class="btn btn-outline">Cancel</button>
+                <button type="submit" class="btn btn-primary">Regenerate Analysis</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endif %}
 {% endblock %}

@@ -96,9 +96,13 @@ def generate_fallback_insights(aggregates: Dict[str, Any], variance_data: Dict[s
     }
 
 
-GEMINI_DEFAULT_API_KEY = "AIzaSyB0oFRGrHDg8fJgTwJIiavfialaSp7yMao"
 GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
-GEMINI_DEFAULT_MODEL = "gemini-3.6-flash"
+# "gemini-1.5-flash" was retired by Google and now 404s on generateContent.
+# "gemini-flash-lite-latest" is a rolling alias (won't go stale like a pinned
+# dated model) on the lite tier, which has more headroom than the full
+# "gemini-flash-latest" alias - that one 503'd repeatedly under normal demand
+# during testing, while lite handled the same request set with no failures.
+GEMINI_DEFAULT_MODEL = "gemini-flash-lite-latest"
 
 
 def generate_ai_insights(
@@ -113,7 +117,7 @@ def generate_ai_insights(
     Pre-configured to use the free Google Gemini API key.
     If network is unavailable, falls back gracefully to deterministic rule-based output.
     """
-    key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("LLM_API_KEY") or GEMINI_DEFAULT_API_KEY
+    key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("LLM_API_KEY")
     url = base_url or os.environ.get("LLM_BASE_URL") or GEMINI_DEFAULT_BASE_URL
     model = model_name or os.environ.get("LLM_MODEL") or GEMINI_DEFAULT_MODEL
 
