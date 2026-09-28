@@ -45,14 +45,20 @@ from modules.db import (
     check_db_health,
     clear_all_data
 )
+from modules.auth import authenticate_user, create_session, get_user_by_session, delete_session, create_user, get_user_by_email, get_team_members
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
+UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")       # permanent input files
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
-UPLOAD_TMP_DIR = os.path.join(DATA_DIR, "tmp_uploads")
+EXCEL_DIR = os.path.join(OUTPUT_DIR, "excel")          # organized excel exports
+PDF_DIR = os.path.join(OUTPUT_DIR, "pdf")              # organized pdf exports
+UPLOAD_TMP_DIR = os.path.join(DATA_DIR, "tmp_uploads") # temp scratch during processing
 
 os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+os.makedirs(EXCEL_DIR, exist_ok=True)
+os.makedirs(PDF_DIR, exist_ok=True)
 os.makedirs(UPLOAD_TMP_DIR, exist_ok=True)
 
 from contextlib import asynccontextmanager
@@ -86,10 +92,22 @@ def favicon_endpoint():
     return Response(content=FAVICON_SVG, media_type="image/svg+xml")
 
 
+# ─── AUTHENTICATION HELPERS ──────────────────────────────────────
+
+def get_current_user(request: Request):
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        return None
+    return get_user_by_session(session_id)
+
+
 # ─── CORE VIEWS & REPORT DASHBOARD ─────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 def index_view(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
     return dashboard_view(request)
 
 
@@ -99,6 +117,10 @@ def dashboard_view(request: Request, report_id: Optional[int] = None):
     Renders executive dashboard. If no report is found or database was reset,
     renders static zeroed-out KPIs and empty breakdown states.
     """
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
     report = None
     if report_id:
         report = get_report_by_id(report_id)
@@ -129,6 +151,7 @@ def dashboard_view(request: Request, report_id: Optional[int] = None):
         name="dashboard.html",
         context={
             "active_page": "dashboard",
+            "user": user,
             "report_id": active_report_id,
             "aggregates": summary_data,
             "variance_data": variance_data,
@@ -140,11 +163,15 @@ def dashboard_view(request: Request, report_id: Optional[int] = None):
 
 @app.get("/upload", response_class=HTMLResponse)
 def upload_view(request: Request, error: Optional[str] = None):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
     return templates.TemplateResponse(
         request=request,
         name="upload.html",
         context={
             "active_page": "upload",
+            "user": user,
             "error_msg": error
         }
     )
@@ -157,6 +184,10 @@ async def handle_upload(
     cadence: str = Form("weekly")
 ):
     """Processes uploaded sheet(s) and automatically compiles utilization report."""
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
     valid_files = [f for f in files if f.filename and f.filename.strip()]
 
     if not valid_files:
@@ -198,8 +229,17 @@ async def handle_upload(
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     excel_filename = f"Resource_Utilization_Report_{timestamp}.xlsx"
     pdf_filename = f"Resource_Utilization_Report_{timestamp}.pdf"
-    excel_path = os.path.join(OUTPUT_DIR, excel_filename)
-    pdf_path = os.path.join(OUTPUT_DIR, pdf_filename)
+    excel_path = os.path.join(EXCEL_DIR, excel_filename)
+    pdf_path = os.path.join(PDF_DIR, pdf_filename)
+
+    # Permanently save uploaded input files to data/uploads/
+    for f_uploaded, saved_tmp_path in zip(valid_files, [os.path.join(session_dir, f.filename) for f in valid_files]):
+        dest = os.path.join(UPLOADS_DIR, f"{timestamp}_{f_uploaded.filename}")
+        try:
+            if os.path.exists(os.path.join(session_dir, f_uploaded.filename)):
+                shutil.copy2(os.path.join(session_dir, f_uploaded.filename), dest)
+        except Exception:
+            pass
 
     create_styled_workbook(aggregates, variance_data, excel_path)
     generate_pdf_report(aggregates, variance_data, ai_insights, pdf_path)
@@ -239,8 +279,14 @@ def load_demo_dataset():
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     excel_filename = f"Resource_Utilization_Report_{timestamp}.xlsx"
     pdf_filename = f"Resource_Utilization_Report_{timestamp}.pdf"
-    excel_path = os.path.join(OUTPUT_DIR, excel_filename)
-    pdf_path = os.path.join(OUTPUT_DIR, pdf_filename)
+    excel_path = os.path.join(EXCEL_DIR, excel_filename)
+    pdf_path = os.path.join(PDF_DIR, pdf_filename)
+
+    # Permanently save demo input file to data/uploads/
+    try:
+        shutil.copy2(demo_file, os.path.join(UPLOADS_DIR, f"{timestamp}_TaskStatus-202608(Input File).csv"))
+    except Exception:
+        pass
 
     create_styled_workbook(aggregates, variance_data, excel_path)
     generate_pdf_report(aggregates, variance_data, ai_insights, pdf_path)
@@ -285,14 +331,80 @@ def regenerate_ai_endpoint(report_id: int = Form(...), gemini_api_key: str = For
     return RedirectResponse(f"/dashboard?report_id={report_id}", status_code=303)
 
 
+# ─── AUTHENTICATION ROUTES ─────────────────────────────────────────
+
+@app.get("/login", response_class=HTMLResponse)
+def login_view(request: Request, error: Optional[str] = None):
+    return templates.TemplateResponse(request=request, name="login.html", context={"active_page": "login", "error": error})
+
+@app.post("/login")
+def login_action(response: Response, email: str = Form(...), password: str = Form(...)):
+    user = authenticate_user(email, password)
+    if not user:
+        return RedirectResponse("/login?error=Invalid+credentials", status_code=303)
+    session_token = create_session(user["id"])
+    res = RedirectResponse("/dashboard", status_code=303)
+    res.set_cookie(key="session_id", value=session_token, httponly=True)
+    return res
+
+@app.get("/logout")
+def logout_action(request: Request, response: Response):
+    session_id = request.cookies.get("session_id")
+    if session_id:
+        delete_session(session_id)
+    res = RedirectResponse("/login", status_code=303)
+    res.delete_cookie("session_id")
+    return res
+
+@app.get("/register", response_class=HTMLResponse)
+def register_view(request: Request, error: Optional[str] = None):
+    return templates.TemplateResponse(request=request, name="register.html", context={"active_page": "register", "error": error})
+
+@app.post("/register")
+def register_action(name: str = Form(...), email: str = Form(...), password: str = Form(...), role: str = Form(...)):
+    if role not in ["TL", "PM"]:
+        return RedirectResponse("/register?error=Invalid+role", status_code=303)
+    existing = get_user_by_email(email)
+    if existing:
+        return RedirectResponse("/register?error=Email+already+exists", status_code=303)
+    create_user(email, name, password, role)
+    return RedirectResponse("/login", status_code=303)
+
+@app.get("/team", response_class=HTMLResponse)
+def team_view(request: Request, error: Optional[str] = None, success: Optional[str] = None):
+    user = get_current_user(request)
+    if not user or user["role"] not in ["TL", "PM"]:
+        return RedirectResponse("/login", status_code=303)
+    members = get_team_members(user["id"])
+    return templates.TemplateResponse(request=request, name="team.html", context={
+        "active_page": "team", "user": user, "members": members, "error": error, "success": success
+    })
+
+@app.post("/team")
+def team_add_action(request: Request, name: str = Form(...), email: str = Form(...), password: str = Form(...)):
+    user = get_current_user(request)
+    if not user or user["role"] not in ["TL", "PM"]:
+        return RedirectResponse("/login", status_code=303)
+    existing = get_user_by_email(email)
+    if existing:
+        return RedirectResponse("/team?error=Email+already+exists", status_code=303)
+    create_user(email, name, password, "MEMBER", manager_id=user["id"])
+    return RedirectResponse("/team?success=Member+added+successfully", status_code=303)
+
+# ─── TRENDS & REPORTS ──────────────────────────────────────────────
+
 @app.get("/trends", response_class=HTMLResponse)
 def trends_view(request: Request):
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
     reports = get_all_reports()
     return templates.TemplateResponse(
         request=request,
         name="trends.html",
         context={
             "active_page": "trends",
+            "user": user,
             "reports": reports
         }
     )
@@ -370,5 +482,5 @@ def healthcheck():
 
 if __name__ == "__main__":
     print("Starting Team Resource Utilization Reporting System...")
-    print("Open your browser and navigate to: http://localhost:8000")
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+    print("Open your browser and navigate to: http://localhost:8001")
+    uvicorn.run("app:app", host="127.0.0.1", port=8001, reload=True)

@@ -113,7 +113,15 @@
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                 <h3>Archived Reports Ledger</h3>
             </div>
-            <div class="d-flex align-center gap-2">
+            <div class="d-flex align-center gap-2" style="flex-wrap:wrap;">
+                <!-- Cadence Filter Buttons -->
+                <div class="d-flex gap-1" id="cadenceFilterBtns">
+                    <button class="btn btn-sm btn-primary" onclick="filterByCadence('all', this)" data-cadence="all">All</button>
+                    <button class="btn btn-sm btn-outline" onclick="filterByCadence('daily', this)" data-cadence="daily">Daily</button>
+                    <button class="btn btn-sm btn-outline" onclick="filterByCadence('weekly', this)" data-cadence="weekly">Weekly</button>
+                    <button class="btn btn-sm btn-outline" onclick="filterByCadence('monthly', this)" data-cadence="monthly">Monthly</button>
+                    <button class="btn btn-sm btn-outline" onclick="filterByCadence('consolidated', this)" data-cadence="consolidated">Consolidated</button>
+                </div>
                 <input type="text" id="trendsSearchInput" class="form-control form-control-sm" placeholder="Search reports..." oninput="filterTrendsTable(this.value)" style="width: 200px;">
                 <button type="button" class="btn btn-sm btn-outline" onclick="exportTableToCSV('trendsTable', 'Historical_Reports_Ledger.csv')">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -128,6 +136,7 @@
                         <tr>
                             <th>Report ID</th>
                             <th>Reporting Period</th>
+                            <th>Cadence</th>
                             <th>Entity Focus</th>
                             <th class="text-right">Total Tasks</th>
                             <th class="text-right">Planned (h)</th>
@@ -140,11 +149,17 @@
                     </thead>
                     <tbody>
                         {% for r in reports %}
-                        <tr>
+                        <tr data-cadence="{{ r.cadence or 'consolidated' }}">
                             <td><strong>#{{ r.id }}</strong></td>
                             <td>
                                 <strong>{{ r.month_label or r.period_label }}</strong>
                                 <div class="text-muted text-small">{{ r.period_label }}</div>
+                            </td>
+                            <td>
+                                {% set c = r.cadence or 'consolidated' %}
+                                <span class="badge {% if c == 'daily' %}badge-info{% elif c == 'weekly' %}badge-primary{% elif c == 'monthly' %}badge-success{% else %}badge-neutral{% endif %}">
+                                    {{ c | capitalize }}
+                                </span>
                             </td>
                             <td><span class="badge badge-field">{{ r.entity_label }}</span></td>
                             <td class="text-right">{{ r.totals.tasks }}</td>
@@ -277,14 +292,35 @@
         }
     }
 
+    let activeCadence = 'all';
+
+    function filterByCadence(cadence, btn) {
+        activeCadence = cadence;
+        // Update button styles
+        document.querySelectorAll('#cadenceFilterBtns button').forEach(b => {
+            b.classList.remove('btn-primary');
+            b.classList.add('btn-outline');
+        });
+        btn.classList.remove('btn-outline');
+        btn.classList.add('btn-primary');
+        // Apply filter
+        applyFilters();
+    }
+
     function filterTrendsTable(query) {
-        const q = (query || '').toLowerCase().trim();
+        applyFilters(query);
+    }
+
+    function applyFilters(query) {
+        const q = (query !== undefined ? query : (document.getElementById('trendsSearchInput')?.value || '')).toLowerCase().trim();
         const tbody = document.querySelector('#trendsTable tbody');
         if (!tbody) return;
         const rows = tbody.querySelectorAll('tr');
-        rows.forEach(r => {
-            const text = r.innerText.toLowerCase();
-            r.style.display = (!q || text.includes(q)) ? '' : 'none';
+        rows.forEach(row => {
+            const rowCadence = (row.dataset.cadence || '').toLowerCase();
+            const matchesCadence = activeCadence === 'all' || rowCadence === activeCadence;
+            const matchesSearch = !q || row.innerText.toLowerCase().includes(q);
+            row.style.display = (matchesCadence && matchesSearch) ? '' : 'none';
         });
     }
 
