@@ -15,10 +15,8 @@ Sample-1.html and Sample-2.html:
 """
 
 from __future__ import annotations
-import math
 from typing import Any, Dict, List, Optional
 import pandas as pd
-import numpy as np
 
 
 def classify_work_category(task_type: str, task_desc: str = "") -> str:
@@ -371,6 +369,12 @@ def calculate_aggregates(
         }
     ]
 
+    # Compute Timesheet Hygiene & Anomaly Radar
+    hygiene = compute_hygiene_and_anomalies(calc_df)
+
+    # Compute 31-Day Workload Heatmap
+    heatmap = compute_workload_heatmap(calc_df)
+
     return {
         "period_label": period_label,
         "month_label": month_label,
@@ -405,7 +409,155 @@ def calculate_aggregates(
         "service_percent_rows": service_percent_rows,
         "overload_radar": overload_radar,
         "action_points": action_points,
-        "raw_task_count": total_tasks
+        "raw_task_count": total_tasks,
+        "hygiene": hygiene,
+        "heatmap": heatmap
+    }
+
+
+def compute_hygiene_and_anomalies(df: pd.DataFrame) -> Dict[str, Any]:
+    """Analyzes timesheet records for anomalies, weekend work, overtime surges, and vague logs."""
+    if df.empty:
+        return {
+            "score": 100,
+            "grade": "A+",
+            "grade_desc": "Clean Baseline",
+            "weekend_tasks_count": 0,
+            "overtime_spikes_count": 0,
+            "vague_tasks_count": 0,
+            "missing_hours_count": 0,
+            "total_flagged": 0,
+            "total_tasks": 0
+        }
+
+    date_series = pd.to_datetime(df["_Parsed_Date"] if "_Parsed_Date" in df.columns else df.get("Date", df.get("date")), dayfirst=True, errors='coerce')
+    weekend_mask = date_series.dt.weekday.isin([5, 6])
+    weekend_count = int(weekend_mask.sum())
+
+    temp_df = df.copy()
+    temp_df["_dt"] = date_series
+    temp_df["_act"] = pd.to_numeric(temp_df["Actual Hours"] if "Actual Hours" in temp_df.columns else temp_df.get("actual_hrs", 0), errors='coerce').fillna(0.0)
+    emp_col = "Employee" if "Employee" in temp_df.columns else "employee"
+
+    daily_emp = temp_df.dropna(subset=["_dt"]).groupby(["_dt", emp_col])["_act"].sum().reset_index()
+    overtime_spikes = int((daily_emp["_act"] > 10.0).sum())
+
+    task_col = df["Task"] if "Task" in df.columns else df.get("task", pd.Series(dtype=object))
+    vague_keywords = {'work', 'meeting', 'support', 'test', 'testing', 'daily', 'status', 'other', 'none', 'general', 'misc', 'issue', 'fix', 'task'}
+    vague_mask = task_col.astype(str).str.lower().str.strip().isin(vague_keywords) | (task_col.astype(str).str.strip().str.len() <= 4)
+    vague_count = int(vague_mask.sum())
+
+    act_col = pd.to_numeric(df["Actual Hours"] if "Actual Hours" in df.columns else df.get("actual_hrs", 0), errors='coerce')
+    missing_hours_count = int(act_col.isna().sum() + (act_col == 0).sum())
+
+    total_tasks = len(df)
+    flagged_total = weekend_count + overtime_spikes + vague_count
+
+    penalty = min(35, round((flagged_total / max(1, total_tasks)) * 100))
+    score = max(65, 100 - penalty)
+
+    if score >= 90:
+        grade = "A+"
+        grade_desc = "Excellent Data Hygiene"
+    elif score >= 80:
+        grade = "A"
+        grade_desc = "Good Timesheet Quality"
+    elif score >= 70:
+        grade = "B"
+        grade_desc = "Acceptable with Minor Flags"
+    else:
+        grade = "C"
+        grade_desc = "Needs Management Attention"
+
+    return {
+        "score": score,
+        "grade": grade,
+        "grade_desc": grade_desc,
+        "weekend_tasks_count": weekend_count,
+        "overtime_spikes_count": overtime_spikes,
+        "vague_tasks_count": vague_count,
+        "missing_hours_count": missing_hours_count,
+        "total_flagged": flagged_total,
+        "total_tasks": total_tasks
+    }
+
+
+def compute_workload_heatmap(df: pd.DataFrame) -> Dict[str, Any]:
+    """Generates a structured 31-day activity grid for calendar heatmap visualization."""
+    if df.empty:
+        return {"days": [], "month_label": "Current Month", "total_logged_days": 0, "busiest_day": None, "busiest_day_hours": 0.0}
+
+    date_series = pd.to_datetime(df["_Parsed_Date"] if "_Parsed_Date" in df.columns else df.get("Date", df.get("date")), dayfirst=True, errors='coerce')
+    valid_mask = date_series.notna()
+    if not valid_mask.any():
+        return {"days": [], "month_label": "Current Month", "total_logged_days": 0, "busiest_day": None, "busiest_day_hours": 0.0}
+
+    temp = df[valid_mask].copy()
+    temp["_dt"] = date_series[valid_mask]
+    temp["_act"] = pd.to_numeric(temp["Actual Hours"] if "Actual Hours" in temp.columns else temp.get("actual_hrs", 0), errors='coerce').fillna(0.0)
+    emp_col = "Employee" if "Employee" in temp.columns else "employee"
+
+    first_dt = temp["_dt"].min()
+    year = first_dt.year
+    month = first_dt.month
+    num_days = pd.Period(f"{year}-{month}").days_in_month
+
+    daily_summary = temp.groupby("_dt").agg(
+        actual_hrs=("_act", "sum"),
+        tasks=("_act", "size"),
+        active_emp=(emp_col, "nunique")
+    ).reset_index()
+    daily_dict = {row["_dt"].strftime('%Y-%m-%d'): row for _, row in daily_summary.iterrows()}
+
+    days_list = []
+    busiest_day = None
+    busiest_day_hours = 0.0
+
+    for day in range(1, num_days + 1):
+        cur_dt = pd.Timestamp(year, month, day)
+        dt_key = cur_dt.strftime('%Y-%m-%d')
+        stats = daily_dict.get(dt_key)
+        hrs = round(float(stats["actual_hrs"]), 1) if stats is not None else 0.0
+        cnt = int(stats["tasks"]) if stats is not None else 0
+        emps = int(stats["active_emp"]) if stats is not None else 0
+
+        if hrs > busiest_day_hours:
+            busiest_day_hours = hrs
+            busiest_day = cur_dt.strftime('%d-%b-%Y')
+
+        # Intensity score 0-4
+        if hrs == 0:
+            intensity = 0
+        elif hrs <= 15:
+            intensity = 1
+        elif hrs <= 35:
+            intensity = 2
+        elif hrs <= 50:
+            intensity = 3
+        else:
+            intensity = 4  # Overtime / Crunch surge
+
+        days_list.append({
+            "day": day,
+            "date": dt_key,
+            "display_date": cur_dt.strftime('%d %b %Y'),
+            "weekday": cur_dt.strftime('%a'),
+            "weekday_idx": cur_dt.weekday(),
+            "is_weekend": cur_dt.weekday() in [5, 6],
+            "actual_hrs": hrs,
+            "tasks": cnt,
+            "active_resources": emps,
+            "intensity": intensity
+        })
+
+    logged_days = sum(1 for d in days_list if d["actual_hrs"] > 0)
+
+    return {
+        "days": days_list,
+        "month_label": first_dt.strftime('%B %Y'),
+        "total_logged_days": logged_days,
+        "busiest_day": busiest_day,
+        "busiest_day_hours": busiest_day_hours
     }
 
 
@@ -480,6 +632,24 @@ def get_empty_aggregates() -> Dict[str, Any]:
                 "tag": "Gemini AI"
             }
         ],
-        "raw_task_count": 0
+        "raw_task_count": 0,
+        "hygiene": {
+            "score": 100,
+            "grade": "A+",
+            "grade_desc": "Clean Baseline",
+            "weekend_tasks_count": 0,
+            "overtime_spikes_count": 0,
+            "vague_tasks_count": 0,
+            "missing_hours_count": 0,
+            "total_flagged": 0,
+            "total_tasks": 0
+        },
+        "heatmap": {
+            "days": [],
+            "month_label": "Current Month",
+            "total_logged_days": 0,
+            "busiest_day": None,
+            "busiest_day_hours": 0.0
+        }
     }
 

@@ -8,7 +8,7 @@ Allows managers to upload an existing final report directly and view it interact
 from __future__ import annotations
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 import openpyxl
 
 

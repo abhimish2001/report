@@ -9,7 +9,6 @@ Fails gracefully with deterministic rule-based narration if offline or API call 
 from __future__ import annotations
 import json
 import os
-import re
 from typing import Any, Dict, List, Optional
 import httpx
 

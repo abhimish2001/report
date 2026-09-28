@@ -1,25 +1,28 @@
 """
 db.py
-SQL Server persistence manager for the Team Resource Utilization Reporting System.
-Uses Microsoft SQL Server exclusively via pyodbc.
-All tables use SQL Server DDL. No SQLite fallback.
-
-Tables:
-- uploads         : Uploaded file metadata
-- tasks           : Individual task rows from uploaded sheets
-- normalization_log: Audit log of data normalization steps
-- reports         : Generated report snapshots (JSON summary + file paths)
-- settings        : Key-value system configuration
-- users           : Registered users (TL / PM / MEMBER)
-- user_sessions   : Active login session tokens
+Code-First Microsoft SQL Server persistence manager using SQLAlchemy ORM.
+Automatically creates the database on any new system and generates all tables
+from models.py.
 """
 
 from __future__ import annotations
 import json
 import logging
 import os
+import urllib.parse
 from typing import Any, Dict, List, Optional
 import pandas as pd
+from sqlalchemy import create_engine, desc, text
+from sqlalchemy.orm import sessionmaker, scoped_session
+
+from modules.models import (
+    Base,
+    Upload,
+    Task,
+    NormalizationLog,
+    Report,
+    Setting
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +43,10 @@ except ImportError:
     )
 
 
-# ── Connection helpers ─────────────────────────────────────────────────────────
+# ── Driver & Connection String Helpers ────────────────────────────────────────
 
 def _get_driver() -> str:
-    """Picks the best installed ODBC driver for SQL Server."""
+    """Detects the best available ODBC driver for SQL Server."""
     configured = os.environ.get("SQL_SERVER_DRIVER", "").strip()
     if configured:
         return configured
@@ -68,28 +71,24 @@ def _get_driver() -> str:
     return "ODBC Driver 18 for SQL Server"
 
 
-def _build_connection_string() -> str:
-    """Builds the ODBC connection string from environment variables."""
-    override = os.environ.get("SQL_SERVER_CONN_STRING", "").strip()
-    if override:
-        return override
-
-    driver   = _get_driver()
-    host     = os.environ.get("SQL_SERVER_HOST", "localhost").strip()
-    port     = os.environ.get("SQL_SERVER_PORT", "1433").strip()
-    database = os.environ.get("SQL_SERVER_DATABASE", "ResourceUtilizationDB").strip()
-    trusted  = os.environ.get("SQL_SERVER_TRUSTED_CONNECTION", "yes").strip().lower()
-    user     = os.environ.get("SQL_SERVER_USER", "").strip()
+def _get_connection_params(database_name: Optional[str] = None) -> str:
+    """Builds standard ODBC connection string."""
+    driver = _get_driver()
+    host = os.environ.get("SQL_SERVER_HOST", "(localdb)\\MSSQLLocalDB").strip()
+    port = os.environ.get("SQL_SERVER_PORT", "").strip()
+    db = database_name if database_name else os.environ.get("SQL_SERVER_DATABASE", "ResourceUtilizationDB").strip()
+    trusted = os.environ.get("SQL_SERVER_TRUSTED_CONNECTION", "yes").strip().lower()
+    user = os.environ.get("SQL_SERVER_USER", "").strip()
     password = os.environ.get("SQL_SERVER_PASSWORD", "").strip()
     trust_cert = os.environ.get("SQL_SERVER_TRUST_CERTIFICATE", "yes").strip().lower()
-    encrypt    = os.environ.get("SQL_SERVER_ENCRYPT", "no").strip().lower()
+    encrypt = os.environ.get("SQL_SERVER_ENCRYPT", "no").strip().lower()
 
     server = f"{host},{port}" if (port and port != "1433" and "\\" not in host) else host
 
     parts = [
         f"DRIVER={{{driver}}}",
         f"SERVER={server}",
-        f"DATABASE={database}",
+        f"DATABASE={db}",
     ]
     if trusted in ("yes", "true", "1"):
         parts.append("Trusted_Connection=yes")
@@ -105,172 +104,87 @@ def _build_connection_string() -> str:
     return ";".join(parts) + ";"
 
 
-def get_connection():
-    """Opens and returns a fresh pyodbc connection to SQL Server."""
-    conn_str = _build_connection_string()
+# ── Auto-Create Database on Any System ────────────────────────────────────────
+
+def ensure_database_exists() -> None:
+    """
+    Connects to the SQL Server 'master' database and automatically creates
+    the target database if it does not yet exist.
+    """
+    target_db = os.environ.get("SQL_SERVER_DATABASE", "ResourceUtilizationDB").strip()
+    master_conn_str = _get_connection_params(database_name="master")
+    encoded_params = urllib.parse.quote_plus(master_conn_str)
+    master_url = f"mssql+pyodbc:///?odbc_connect={encoded_params}"
+
+    master_engine = create_engine(master_url, isolation_level="AUTOCOMMIT")
     try:
-        return pyodbc.connect(conn_str, timeout=10, autocommit=False)
-    except pyodbc.Error as e:
-        logger.error("SQL Server connection failed: %s", e)
-        raise RuntimeError(
-            f"Cannot connect to SQL Server. Check your .env configuration.\nDetails: {e}"
-        ) from e
+        with master_engine.connect() as conn:
+            # Check if database exists
+            chk = conn.execute(
+                text("SELECT database_id FROM sys.databases WHERE name = :dbname"),
+                {"dbname": target_db}
+            ).scalar()
+            if not chk:
+                logger.info("Database '%s' does not exist. Creating it automatically...", target_db)
+                # Escaping database name bracket safely
+                safe_db_name = target_db.replace("]", "]]")
+                conn.execute(text(f"CREATE DATABASE [{safe_db_name}]"))
+                logger.info("Database '%s' created successfully.", target_db)
+    except Exception as e:
+        logger.warning("Could not auto-verify/create database via master: %s", e)
+    finally:
+        master_engine.dispose()
 
 
-# Keep a thin manager shim so app.py / auth.py imports continue to work
-class _DbManager:
-    def get_raw_connection(self):
-        return get_connection()
+# ── SQLAlchemy Engine & Session Factory ────────────────────────────────────────
 
-    @staticmethod
-    def is_sql_server() -> bool:
-        return True
+def _get_engine():
+    db_conn_str = _get_connection_params()
+    encoded_params = urllib.parse.quote_plus(db_conn_str)
+    engine_url = f"mssql+pyodbc:///?odbc_connect={encoded_params}"
+    return create_engine(
+        engine_url,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+        fast_executemany=True
+    )
 
 
-db_mgr = _DbManager()
+_ENGINE = None
+_SESSION_FACTORY = None
 
 
-# ── Schema Init ───────────────────────────────────────────────────────────────
+def get_engine():
+    global _ENGINE
+    if _ENGINE is None:
+        _ENGINE = _get_engine()
+    return _ENGINE
 
-_DDL_STATEMENTS = [
-    # uploads
-    """
-    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[uploads]') AND type = N'U')
-    CREATE TABLE [dbo].[uploads] (
-        [id]           INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-        [session_id]   NVARCHAR(100)     NOT NULL,
-        [filename]     NVARCHAR(500)     NULL,
-        [period_label] NVARCHAR(255)     NULL,
-        [uploaded_at]  DATETIME2         DEFAULT SYSUTCDATETIME() NOT NULL,
-        [employee_hint]NVARCHAR(255)     NULL,
-        [row_count]    INT               NULL
-    );
-    """,
-    # tasks
-    """
-    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[tasks]') AND type = N'U')
-    CREATE TABLE [dbo].[tasks] (
-        [id]          INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-        [session_id]  NVARCHAR(100)     NOT NULL,
-        [upload_id]   INT               NULL,
-        [date]        NVARCHAR(50)      NULL,
-        [service]     NVARCHAR(255)     NULL,
-        [employee]    NVARCHAR(255)     NULL,
-        [task]        NVARCHAR(500)     NULL,
-        [description] NVARCHAR(MAX)     NULL,
-        [status]      NVARCHAR(100)     NULL,
-        [expected_hrs]FLOAT             NULL,
-        [actual_hrs]  FLOAT             NULL,
-        [task_type]   NVARCHAR(255)     NULL,
-        [stack]       NVARCHAR(255)     NULL,
-        [priority]    NVARCHAR(100)     NULL,
-        [start_date]  NVARCHAR(50)      NULL,
-        [end_date]    NVARCHAR(50)      NULL,
-        [week]        NVARCHAR(100)     NULL,
-        [university]  NVARCHAR(255)     NULL,
-        [created_at]  DATETIME2         DEFAULT SYSUTCDATETIME() NOT NULL
-    );
-    """,
-    # normalization_log
-    """
-    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[normalization_log]') AND type = N'U')
-    CREATE TABLE [dbo].[normalization_log] (
-        [id]                INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-        [session_id]        NVARCHAR(100)     NOT NULL,
-        [field_name]        NVARCHAR(100)     NULL,
-        [raw_value]         NVARCHAR(500)     NULL,
-        [normalized_value]  NVARCHAR(500)     NULL,
-        [row_count_affected]INT               NULL,
-        [logged_at]         DATETIME2         DEFAULT SYSUTCDATETIME() NOT NULL
-    );
-    """,
-    # reports
-    """
-    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[reports]') AND type = N'U')
-    CREATE TABLE [dbo].[reports] (
-        [id]               INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-        [session_id]       NVARCHAR(100)     NOT NULL,
-        [period_label]     NVARCHAR(255)     NULL,
-        [cadence]          NVARCHAR(50)      DEFAULT 'monthly' NULL,
-        [summary_json]     NVARCHAR(MAX)     NULL,
-        [variance_json]    NVARCHAR(MAX)     NULL,
-        [ai_insights_json] NVARCHAR(MAX)     NULL,
-        [excel_path]       NVARCHAR(1000)    NULL,
-        [pdf_path]         NVARCHAR(1000)    NULL,
-        [generated_at]     DATETIME2         DEFAULT SYSUTCDATETIME() NOT NULL
-    );
-    """,
-    # settings
-    """
-    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[settings]') AND type = N'U')
-    CREATE TABLE [dbo].[settings] (
-        [key]        NVARCHAR(100) NOT NULL PRIMARY KEY,
-        [value]      NVARCHAR(MAX) NULL,
-        [updated_at] DATETIME2     DEFAULT SYSUTCDATETIME() NOT NULL
-    );
-    """,
-    # users
-    """
-    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[users]') AND type = N'U')
-    CREATE TABLE [dbo].[users] (
-        [id]            INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-        [email]         NVARCHAR(255)     NOT NULL UNIQUE,
-        [name]          NVARCHAR(255)     NULL,
-        [password_hash] NVARCHAR(255)     NOT NULL,
-        [role]          NVARCHAR(50)      NOT NULL,
-        [manager_id]    INT               NULL,
-        [created_at]    DATETIME2         DEFAULT SYSUTCDATETIME() NOT NULL
-    );
-    """,
-    # user_sessions
-    """
-    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[user_sessions]') AND type = N'U')
-    CREATE TABLE [dbo].[user_sessions] (
-        [session_token] NVARCHAR(100) NOT NULL PRIMARY KEY,
-        [user_id]       INT           NOT NULL,
-        [expires_at]    DATETIME2     NOT NULL,
-        [created_at]    DATETIME2     DEFAULT SYSUTCDATETIME() NOT NULL
-    );
-    """,
-    # indexes
-    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_reports_gen'   AND object_id = OBJECT_ID('[dbo].[reports]')) CREATE NONCLUSTERED INDEX [IX_reports_gen]   ON [dbo].[reports]([generated_at] DESC);",
-    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_tasks_session' AND object_id = OBJECT_ID('[dbo].[tasks]'))   CREATE NONCLUSTERED INDEX [IX_tasks_session] ON [dbo].[tasks]([session_id]);",
-    "IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_tasks_emp'     AND object_id = OBJECT_ID('[dbo].[tasks]'))   CREATE NONCLUSTERED INDEX [IX_tasks_emp]     ON [dbo].[tasks]([employee]);",
-]
 
-# Column migrations for tables that may already exist from older deployments
-_COLUMN_MIGRATIONS = [
-    ("reports", "cadence",    "NVARCHAR(50) DEFAULT 'monthly' NULL"),
-    ("uploads",  "period_label", "NVARCHAR(255) NULL"),
-    ("tasks",    "university", "NVARCHAR(255) NULL"),
-]
+def get_session():
+    """Returns a new SQLAlchemy Session."""
+    global _SESSION_FACTORY
+    if _SESSION_FACTORY is None:
+        engine = get_engine()
+        _SESSION_FACTORY = scoped_session(sessionmaker(bind=engine, autoflush=False, autocommit=False))
+    return _SESSION_FACTORY()
 
+
+# ── Database Initialization (Code-First) ──────────────────────────────────────
 
 def init_database() -> None:
-    """Creates all SQL Server tables and runs column migrations if needed."""
-    conn = get_connection()
-    try:
-        cursor = conn.cursor()
-        for ddl in _DDL_STATEMENTS:
-            cursor.execute(ddl)
-        for table, column, col_type in _COLUMN_MIGRATIONS:
-            cursor.execute(f"""
-                IF NOT EXISTS (
-                    SELECT * FROM sys.columns
-                    WHERE object_id = OBJECT_ID(N'[dbo].[{table}]') AND name = '{column}'
-                )
-                ALTER TABLE [dbo].[{table}] ADD [{column}] {col_type};
-            """)
-        conn.commit()
-        logger.info("Database schema initialised successfully.")
-    except Exception as e:
-        logger.error("init_database failed: %s", e)
-        raise
-    finally:
-        conn.close()
+    """
+    Auto-creates the database if needed, then applies all SQLAlchemy models
+    to create or update the tables in SQL Server.
+    """
+    ensure_database_exists()
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database and tables initialized successfully via Code-First models.")
 
 
-# ── Data persistence ──────────────────────────────────────────────────────────
+# ── Persistence API ───────────────────────────────────────────────────────────
 
 def save_session_data(
     session_id: str,
@@ -280,231 +194,295 @@ def save_session_data(
     aggregates: Dict[str, Any],
     variance_data: Dict[str, Any],
     ai_insights: Dict[str, Any],
-    excel_path: str,
-    pdf_path: str,
-    cadence: str = "consolidated",
+    cadence: str = "monthly"
 ) -> int:
-    """Persists uploaded tasks, normalization audit, and calculated report to SQL Server."""
-    conn = get_connection()
+    """
+    Saves an uploaded timesheet session, raw task rows, normalization audit log,
+    and compiled report summary into SQL Server using Code-First models.
+    """
+    session = get_session()
     try:
-        cursor = conn.cursor()
+        period_label = aggregates.get("period_label", "August 2026")
+        first_upload_id = None
 
-        # 1. Uploads
-        for up in uploads_info:
-            cursor.execute("""
-                INSERT INTO uploads (session_id, filename, period_label, employee_hint, row_count)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                session_id,
-                up.get("filename"),
-                aggregates.get("period_label", ""),
-                up.get("detected_employee"),
-                up.get("row_count"),
-            ))
-
-        # 2. Tasks
-        def _num(val):
-            if pd.isna(val):
-                return None
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                return None
-
-        task_rows = [
-            (
-                session_id, None,
-                str(row.get("Date", "") or ""),
-                str(row.get("Service", "") or ""),
-                str(row.get("Employee", "") or ""),
-                str(row.get("Task", "") or ""),
-                str(row.get("Description", "") or ""),
-                str(row.get("Status", "") or ""),
-                _num(row.get("Expected Hours")),
-                _num(row.get("Actual Hours")),
-                str(row.get("Task Type", "") or ""),
-                str(row.get("Stack", "") or ""),
-                str(row.get("Priority", "") or ""),
-                str(row.get("Start Date", "") or ""),
-                str(row.get("End Date", "") or ""),
-                str(row.get("Week", "") or ""),
-                str(row.get("Service", "") or ""),
+        # 1. Save uploads metadata
+        for u_info in uploads_info:
+            u = Upload(
+                session_id=session_id,
+                filename=u_info.get("filename"),
+                period_label=period_label,
+                employee_hint=u_info.get("detected_employee"),
+                row_count=u_info.get("row_count")
             )
-            for _, row in normalized_df.iterrows()
-        ]
-        if task_rows:
-            cursor.executemany("""
-                INSERT INTO tasks (
-                    session_id, upload_id, date, service, employee, task, description,
-                    status, expected_hrs, actual_hrs, task_type, stack, priority,
-                    start_date, end_date, week, university
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, task_rows)
+            session.add(u)
+            session.flush()
+            if first_upload_id is None:
+                first_upload_id = u.id
 
-        # 3. Normalization log
-        log_rows = [
-            (
-                session_id,
-                entry.get("field_name"),
-                str(entry.get("raw_value", "") or ""),
-                str(entry.get("normalized_value", "") or ""),
-                int(entry.get("row_count_affected", 0) or 0),
-            )
-            for entry in norm_log
-        ]
-        if log_rows:
-            cursor.executemany("""
-                INSERT INTO normalization_log (session_id, field_name, raw_value, normalized_value, row_count_affected)
-                VALUES (?, ?, ?, ?, ?)
-            """, log_rows)
+        # 2. Save individual task rows
+        if not normalized_df.empty:
+            task_records = []
+            for _, r in normalized_df.iterrows():
+                t = Task(
+                    session_id=session_id,
+                    upload_id=first_upload_id,
+                    date=str(r.get("Date") or ""),
+                    service=str(r.get("Service") or ""),
+                    employee=str(r.get("Employee") or ""),
+                    task=str(r.get("Task") or "")[:500],
+                    description=str(r.get("Description") or "") if r.get("Description") is not None else None,
+                    status=str(r.get("Status") or "")[:100],
+                    expected_hrs=float(r.get("Expected Hours")) if pd.notnull(r.get("Expected Hours")) else 0.0,
+                    actual_hrs=float(r.get("Actual Hours")) if pd.notnull(r.get("Actual Hours")) else 0.0,
+                    task_type=str(r.get("Task Type") or "")[:255],
+                    stack=str(r.get("Stack") or "")[:255] if pd.notnull(r.get("Stack")) else None,
+                    priority=str(r.get("Priority") or "")[:100] if pd.notnull(r.get("Priority")) else None,
+                    start_date=str(r.get("Start Date") or "")[:50] if pd.notnull(r.get("Start Date")) else None,
+                    end_date=str(r.get("End Date") or "")[:50] if pd.notnull(r.get("End Date")) else None,
+                    week=str(r.get("Week") or "")[:100] if pd.notnull(r.get("Week")) else None,
+                    university=str(r.get("University") or "")[:255] if pd.notnull(r.get("University")) else None
+                )
+                task_records.append(t)
+            session.bulk_save_objects(task_records)
 
-        # 4. Report (SQL Server OUTPUT clause returns the new ID)
-        cursor.execute("""
-            INSERT INTO reports (session_id, period_label, cadence, summary_json, variance_json, ai_insights_json, excel_path, pdf_path)
-            OUTPUT INSERTED.id
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            session_id,
-            aggregates.get("period_label", ""),
-            cadence,
-            json.dumps(aggregates),
-            json.dumps(variance_data),
-            json.dumps(ai_insights),
-            excel_path,
-            pdf_path,
-        ))
-        report_id = cursor.fetchone()[0]
-        conn.commit()
-        return int(report_id)
+        # 3. Save normalization audit log
+        if norm_log:
+            norm_records = []
+            for n in norm_log:
+                nl = NormalizationLog(
+                    session_id=session_id,
+                    field_name=n.get("field_name") or n.get("field"),
+                    raw_value=str(n.get("raw_value") or "")[:500],
+                    normalized_value=str(n.get("normalized_value") or "")[:500],
+                    row_count_affected=n.get("row_count_affected", 1)
+                )
+                norm_records.append(nl)
+            session.bulk_save_objects(norm_records)
+
+        # 4. Save compiled report snapshot
+        report = Report(
+            session_id=session_id,
+            period_label=period_label,
+            cadence=cadence,
+            summary_json=json.dumps(aggregates, default=str),
+            variance_json=json.dumps(variance_data, default=str),
+            ai_insights_json=json.dumps(ai_insights, default=str)
+        )
+        session.add(report)
+        session.commit()
+        return report.id
+    except Exception:
+        session.rollback()
+        raise
     finally:
-        conn.close()
-
-
-def _row_to_report(row) -> Dict[str, Any]:
-    return {
-        "id":           row[0],
-        "session_id":   row[1],
-        "generated_at": str(row[2]),
-        "period_label": row[3],
-        "summary":      json.loads(row[4]) if row[4] else {},
-        "variance":     json.loads(row[5]) if row[5] else {},
-        "ai_insights":  json.loads(row[6]) if row[6] else {},
-        "excel_path":   row[7],
-        "pdf_path":     row[8],
-        "cadence":      row[9] or "consolidated",
-    }
+        session.close()
 
 
 def get_latest_report() -> Optional[Dict[str, Any]]:
-    """Returns the most recently generated report."""
-    conn = get_connection()
+    """Retrieves the most recently generated report."""
+    session = get_session()
     try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT TOP 1 id, session_id, generated_at, period_label,
-                   summary_json, variance_json, ai_insights_json, excel_path, pdf_path, cadence
-            FROM reports
-            ORDER BY id DESC
-        """)
-        row = cursor.fetchone()
-        return _row_to_report(row) if row else None
+        report = session.query(Report).order_by(desc(Report.generated_at)).first()
+        if not report:
+            return None
+        return _format_report(report)
     finally:
-        conn.close()
+        session.close()
 
 
 def get_report_by_id(report_id: int) -> Optional[Dict[str, Any]]:
-    """Returns a specific report by primary key."""
-    conn = get_connection()
+    """Retrieves a specific report by primary key."""
+    session = get_session()
     try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, session_id, generated_at, period_label,
-                   summary_json, variance_json, ai_insights_json, excel_path, pdf_path, cadence
-            FROM reports
-            WHERE id = ?
-        """, (report_id,))
-        row = cursor.fetchone()
-        return _row_to_report(row) if row else None
+        report = session.query(Report).filter(Report.id == report_id).first()
+        if not report:
+            return None
+        return _format_report(report)
     finally:
-        conn.close()
+        session.close()
 
 
 def get_all_reports() -> List[Dict[str, Any]]:
-    """Returns all reports ordered newest first."""
-    conn = get_connection()
+    """Retrieves all historical reports for trends."""
+    session = get_session()
     try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, session_id, generated_at, period_label,
-                   summary_json, excel_path, pdf_path, cadence
-            FROM reports
-            ORDER BY id DESC
-        """)
-        rows = cursor.fetchall()
-        result = []
-        for r in rows:
-            summary = json.loads(r[4]) if r[4] else {}
-            result.append({
-                "id":           r[0],
-                "session_id":   r[1],
-                "generated_at": str(r[2]),
-                "period_label": r[3],
-                "totals":       summary.get("totals", {}),
-                "entity_label": summary.get("entity_label", "Service"),
-                "month_label":  summary.get("month_label", ""),
-                "excel_path":   r[5],
-                "pdf_path":     r[6],
-                "cadence":      r[7] or "consolidated",
-            })
-        return result
+        reports = session.query(Report).order_by(desc(Report.generated_at)).all()
+        return [_format_report(r) for r in reports]
     finally:
-        conn.close()
+        session.close()
 
 
-def check_db_health() -> Dict[str, Any]:
-    """Returns SQL Server health information."""
+def update_report_ai_insights(report_id: int, ai_insights: Dict[str, Any]) -> None:
+    """Updates AI insights payload for an existing report."""
+    session = get_session()
     try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT @@VERSION, DB_NAME(), @@SERVERNAME")
-        row = cursor.fetchone()
-        conn.close()
-        return {
-            "status": "healthy",
-            "database_engine": "Microsoft SQL Server",
-            "is_sql_server": True,
-            "details": {
-                "server":   str(row[2]),
-                "database": str(row[1]),
-                "version":  str(row[0]).split("\n")[0],
-                "driver":   _get_driver(),
-            },
-        }
-    except Exception as e:
-        return {
-            "status": "unhealthy",
-            "database_engine": "Microsoft SQL Server",
-            "is_sql_server": True,
-            "details": {"error": str(e)},
-        }
+        report = session.query(Report).filter(Report.id == report_id).first()
+        if report:
+            report.ai_insights_json = json.dumps(ai_insights, default=str)
+            session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def clear_all_data() -> None:
-    """Wipes all task and report data (preserves users and sessions)."""
-    conn = get_connection()
+    """Truncates/clears all uploaded tasks, files, audit logs, and reports."""
+    session = get_session()
     try:
-        cursor = conn.cursor()
-        for t in ["tasks", "normalization_log", "reports", "uploads", "settings"]:
-            try:
-                cursor.execute(f"DELETE FROM {t}")
-            except Exception:
-                pass
-        conn.commit()
+        session.query(Task).delete()
+        session.query(Upload).delete()
+        session.query(NormalizationLog).delete()
+        session.query(Report).delete()
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     finally:
-        conn.close()
+        session.close()
 
 
-# ── Legacy compat shim ────────────────────────────────────────────────────────
-def get_sql_server_connection_string() -> str:
-    """Compat alias — returns the active connection string."""
-    return _build_connection_string()
+def check_db_health() -> Dict[str, Any]:
+    """Health check for SQL Server connection."""
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            ver = conn.execute(text("SELECT @@VERSION")).scalar()
+            cnt = conn.execute(text("SELECT COUNT(*) FROM reports")).scalar()
+            tasks_cnt = conn.execute(text("SELECT COUNT(*) FROM tasks")).scalar()
+            return {
+                "connected": True,
+                "version": str(ver).split("\n")[0],
+                "reports_count": cnt,
+                "tasks_count": tasks_cnt,
+            }
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
+
+
+def _format_report(report: Report) -> Dict[str, Any]:
+    """Helper to deserialize report model into dict."""
+    summary = json.loads(report.summary_json) if report.summary_json else {}
+    return {
+        "id": report.id,
+        "session_id": report.session_id,
+        "period_label": report.period_label,
+        "cadence": report.cadence,
+        "generated_at": report.generated_at.strftime("%d-%b-%Y %H:%M") if report.generated_at else "",
+        "summary": summary,
+        "totals": summary.get("totals", {}),
+        "variance": json.loads(report.variance_json) if report.variance_json else {},
+        "ai_insights": json.loads(report.ai_insights_json) if report.ai_insights_json else {}
+    }
+
+
+def get_report_tasks(
+    report_id: int,
+    employee: Optional[str] = None,
+    service: Optional[str] = None,
+    task_type: Optional[str] = None,
+    week: Optional[str] = None,
+    status: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    search: Optional[str] = None,
+    anomaly_type: Optional[str] = None,
+    limit: int = 5000
+) -> List[Dict[str, Any]]:
+    """Fetches granular task records for a report session, with optional drill-down filters."""
+    session = get_session()
+    try:
+        report = session.query(Report).filter(Report.id == report_id).first()
+        if not report:
+            return []
+        query = session.query(Task).filter(Task.session_id == report.session_id)
+        if employee and employee.strip() and employee != "All":
+            query = query.filter(Task.employee == employee.strip())
+        if service and service.strip() and service != "All":
+            s_val = service.strip()
+            query = query.filter((Task.service == s_val) | (Task.university == s_val))
+        if task_type and task_type.strip() and task_type != "All":
+            query = query.filter(Task.task_type.ilike(f"%{task_type.strip()}%"))
+        if week and week.strip() and week != "All":
+            query = query.filter(Task.week.ilike(f"%{week.strip()}%"))
+        if status and status.strip() and status != "All":
+            query = query.filter(Task.status.ilike(f"%{status.strip()}%"))
+        if search and search.strip():
+            s = f"%{search.strip()}%"
+            query = query.filter(
+                (Task.task.ilike(s)) |
+                (Task.description.ilike(s)) |
+                (Task.service.ilike(s)) |
+                (Task.employee.ilike(s))
+            )
+
+        tasks = query.order_by(Task.date.desc(), Task.id.asc()).limit(limit).all()
+
+        clean_from = from_date.strip() if from_date and from_date.strip() else None
+        clean_to = to_date.strip() if to_date and to_date.strip() else None
+        clean_anomaly = anomaly_type.strip().lower() if anomaly_type and anomaly_type.strip() else None
+
+        overtime_keys = set()
+        if clean_anomaly in ["overtime", "all"]:
+            daily_sums = {}
+            for t in tasks:
+                dt = pd.to_datetime(t.date, dayfirst=True, errors='coerce')
+                dt_k = dt.strftime('%Y-%m-%d') if pd.notnull(dt) else ""
+                emp_k = t.employee or ""
+                daily_sums[(dt_k, emp_k)] = daily_sums.get((dt_k, emp_k), 0.0) + (t.actual_hrs or 0.0)
+            overtime_keys = {pair for pair, total in daily_sums.items() if total > 10.0}
+
+        vague_keywords = {'work', 'meeting', 'support', 'test', 'testing', 'daily', 'status', 'other', 'none', 'general', 'misc', 'issue', 'fix', 'task'}
+        results = []
+
+        for t in tasks:
+            dt = pd.to_datetime(t.date, dayfirst=True, errors='coerce')
+            iso_date = dt.strftime('%Y-%m-%d') if pd.notnull(dt) else ""
+
+            if clean_from and iso_date and iso_date < clean_from:
+                continue
+            if clean_to and iso_date and iso_date > clean_to:
+                continue
+
+            if clean_anomaly:
+                is_weekend = dt.weekday() in [5, 6] if pd.notnull(dt) else False
+                task_text = (t.task or "").lower().strip()
+                is_vague = task_text in vague_keywords or len(task_text) <= 4
+                is_overtime = (iso_date, t.employee or "") in overtime_keys
+                is_missing = (t.actual_hrs or 0.0) == 0.0 or (t.expected_hrs or 0.0) == 0.0
+
+                if clean_anomaly == "weekend" and not is_weekend:
+                    continue
+                elif clean_anomaly == "vague" and not is_vague:
+                    continue
+                elif clean_anomaly == "overtime" and not is_overtime:
+                    continue
+                elif clean_anomaly == "missing" and not is_missing:
+                    continue
+                elif clean_anomaly == "all" and not (is_weekend or is_vague or is_overtime or is_missing):
+                    continue
+
+            results.append({
+                "id": t.id,
+                "date": t.date or "N/A",
+                "iso_date": iso_date,
+                "service": t.service or t.university or "N/A",
+                "university": t.university or t.service or "N/A",
+                "employee": t.employee or "N/A",
+                "task": t.task or "Untitled Task",
+                "description": t.description or "",
+                "status": t.status or "Completed",
+                "expected_hrs": round(t.expected_hrs or 0.0, 2),
+                "actual_hrs": round(t.actual_hrs or 0.0, 2),
+                "variance": round((t.actual_hrs or 0.0) - (t.expected_hrs or 0.0), 2),
+                "task_type": t.task_type or "Support",
+                "stack": t.stack or "",
+                "priority": t.priority or "",
+                "week": t.week or ""
+            })
+
+        return results
+    finally:
+        session.close()
+

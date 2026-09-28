@@ -2,72 +2,66 @@
 app.py
 FastAPI application entrypoint for the Team Resource Utilization Reporting System.
 Key Features:
-- Cookie-session authentication with TL / PM / MEMBER roles
-- Multi-cadence timesheet ingestion (Daily, Weekly, Monthly, Consolidated)
-- Zero-baseline initial static dashboard KPIs (0 tasks, 0.0 hrs, 0.0% util)
-- Automated report generation styled after Sample-1.html and Sample-2.html
-- Gemini AI executive insights and management action synthesis
-- Microsoft SQL Server only (no SQLite fallback)
-- 4-Sheet Excel and Executive PDF exports
+- Direct open access: No login friction, instant dashboard and report workflow
+- Code-First Microsoft SQL Server persistence (auto-creates database and schema)
+- Upload and analyze Excel (.xlsx, .xls) and CSV task timesheets
+- Zero disk footprint: In-memory processing and direct streaming for Excel/PDF exports
+- Supports single-employee and multi-employee sheets
+- Dynamic KPIs, Work-type analysis, Resource utilization, and AI Governance insights
 """
 
 from __future__ import annotations
 import datetime
+import io
 import os
-import shutil
 import uuid
-import threading
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
-import fastapi
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+import pandas as pd
+from pydantic import BaseModel
+import uvicorn
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-import pandas as pd
-import uvicorn
 
-EXPORT_LOCK = threading.Lock()
+from modules.ai_copilot import ask_gemini_copilot
 
-from modules.excel_reader import load_uploaded_files, read_file_to_dataframe, extract_file_preview
-from modules.column_mapper import detect_column_mappings, map_dataframe_to_schema
+from modules.excel_reader import read_file_to_dataframe, extract_file_preview
+from modules.column_mapper import map_dataframe_to_schema
 from modules.normalizer import run_normalization_pipeline
-from modules.calculator import calculate_aggregates, get_empty_aggregates
+from modules.calculator import (
+    calculate_aggregates,
+    get_empty_aggregates,
+    compute_hygiene_and_anomalies,
+    compute_workload_heatmap
+)
 from modules.variance_engine import analyze_variances
 from modules.ai_insights import generate_ai_insights
 from modules.excel_exporter import create_styled_workbook
 from modules.pdf_exporter import generate_pdf_report
+from modules.report_reader import is_consolidated_report_file, parse_consolidated_report
 from modules.db import (
     init_database,
     save_session_data,
     get_latest_report,
     get_report_by_id,
     get_all_reports,
+    update_report_ai_insights,
     check_db_health,
-    clear_all_data
+    clear_all_data,
+    get_report_tasks
 )
-from modules.auth import authenticate_user, create_session, get_user_by_session, delete_session, create_user, get_user_by_email, get_team_members
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-UPLOADS_DIR = os.path.join(DATA_DIR, "uploads")       # permanent input files
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
-EXCEL_DIR = os.path.join(OUTPUT_DIR, "excel")          # organized excel exports
-PDF_DIR = os.path.join(OUTPUT_DIR, "pdf")              # organized pdf exports
-UPLOAD_TMP_DIR = os.path.join(DATA_DIR, "tmp_uploads") # temp scratch during processing
 
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(UPLOADS_DIR, exist_ok=True)
-os.makedirs(EXCEL_DIR, exist_ok=True)
-os.makedirs(PDF_DIR, exist_ok=True)
-os.makedirs(UPLOAD_TMP_DIR, exist_ok=True)
-
-from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize database tables cleanly without auto-seeding demo data
+    # Auto-creates the database if not present and initializes tables from Code-First models
     init_database()
     yield
+
 
 app = FastAPI(title="Team Resource Utilization Reporting System", lifespan=lifespan)
 
@@ -87,55 +81,127 @@ FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" wid
   <line x1="16" y1="26.08" x2="16" y2="16" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>"""
 
+
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon_endpoint():
     return Response(content=FAVICON_SVG, media_type="image/svg+xml")
-
-
-# ─── AUTHENTICATION HELPERS ──────────────────────────────────────
-
-def get_current_user(request: Request):
-    session_id = request.cookies.get("session_id")
-    if not session_id:
-        return None
-    return get_user_by_session(session_id)
 
 
 # ─── CORE VIEWS & REPORT DASHBOARD ─────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 def index_view(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
     return dashboard_view(request)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-def dashboard_view(request: Request, report_id: Optional[int] = None):
+def dashboard_view(
+    request: Request,
+    report_id: Optional[int] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    week: Optional[str] = None,
+    service: Optional[str] = None,
+    task_type: Optional[str] = None,
+    employee: Optional[str] = None,
+    status: Optional[str] = None,
+    anomaly_type: Optional[str] = None
+):
     """
-    Renders executive dashboard. If no report is found or database was reset,
-    renders static zeroed-out KPIs and empty breakdown states.
+    Renders executive dashboard with dynamic filtering by date, week,
+    service, task type, employee, status, or anomaly.
     """
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
-
     report = None
     if report_id:
         report = get_report_by_id(report_id)
     else:
         report = get_latest_report()
 
+    clean_from = from_date.strip() if from_date and from_date.strip() else None
+    clean_to = to_date.strip() if to_date and to_date.strip() else None
+    clean_week = week.strip() if week and week.strip() else None
+    clean_svc = service.strip() if service and service.strip() else None
+    clean_type = task_type.strip() if task_type and task_type.strip() else None
+    clean_emp = employee.strip() if employee and employee.strip() else None
+    clean_status = status.strip() if status and status.strip() else None
+    clean_anomaly = anomaly_type.strip() if anomaly_type and anomaly_type.strip() else None
+
+    has_active_filter = any([clean_from, clean_to, clean_week, clean_svc, clean_type, clean_emp, clean_status, clean_anomaly])
+
+    active_filters = {
+        "from_date": clean_from or "",
+        "to_date": clean_to or "",
+        "week": clean_week or "",
+        "service": clean_svc or "",
+        "task_type": clean_type or "",
+        "employee": clean_emp or "",
+        "status": clean_status or "",
+        "anomaly_type": clean_anomaly or "",
+        "is_active": has_active_filter
+    }
+
     if report:
-        summary_data = report["summary"]
+        active_report_id = report["id"]
+        baseline_summary = report["summary"]
         variance_data = report["variance"]
         ai_insights = report.get("ai_insights", {})
-        active_report_id = report["id"]
-        files_count = len(summary_data.get("by_employee", [])) or 1
+        files_count = len(baseline_summary.get("by_employee", [])) or 1
+
+        if has_active_filter and active_report_id > 0:
+            filtered_tasks = get_report_tasks(
+                report_id=active_report_id,
+                employee=clean_emp,
+                service=clean_svc,
+                task_type=clean_type,
+                week=clean_week,
+                status=clean_status,
+                from_date=clean_from,
+                to_date=clean_to,
+                anomaly_type=clean_anomaly,
+                limit=5000
+            )
+            if filtered_tasks:
+                df_f = pd.DataFrame(filtered_tasks)
+                df_standard = df_f.rename(columns={
+                    'date': 'Date',
+                    'service': 'Service',
+                    'employee': 'Employee',
+                    'task': 'Task',
+                    'description': 'Description',
+                    'status': 'Status',
+                    'expected_hrs': 'Expected Hours',
+                    'actual_hrs': 'Actual Hours',
+                    'task_type': 'Task Type',
+                    'week': 'Week'
+                })
+                df_standard['_Parsed_Date'] = pd.to_datetime(df_standard['Date'], dayfirst=True, errors='coerce')
+                summary_data = calculate_aggregates(df_standard)
+                # Keep full catalog for filter controls
+                summary_data["ordered_weeks"] = baseline_summary.get("ordered_weeks", [])
+                summary_data["all_services"] = baseline_summary.get("by_service", [])
+                summary_data["all_employees"] = baseline_summary.get("by_employee", [])
+                summary_data["hygiene"] = compute_hygiene_and_anomalies(df_standard)
+                summary_data["heatmap"] = compute_workload_heatmap(df_standard)
+            else:
+                summary_data = get_empty_aggregates()
+                summary_data["ordered_weeks"] = baseline_summary.get("ordered_weeks", [])
+                summary_data["all_services"] = baseline_summary.get("by_service", [])
+                summary_data["all_employees"] = baseline_summary.get("by_employee", [])
+        else:
+            summary_data = baseline_summary
+            summary_data["all_services"] = baseline_summary.get("by_service", [])
+            summary_data["all_employees"] = baseline_summary.get("by_employee", [])
+            # Dynamic fallback: compute hygiene and heatmap for historical reports if not yet present
+            if active_report_id > 0 and ("hygiene" not in summary_data or "heatmap" not in summary_data):
+                db_tasks = get_report_tasks(active_report_id, limit=5000)
+                if db_tasks:
+                    df_tasks = pd.DataFrame(db_tasks)
+                    summary_data["hygiene"] = compute_hygiene_and_anomalies(df_tasks)
+                    summary_data["heatmap"] = compute_workload_heatmap(df_tasks)
     else:
-        # Zero baseline initial state
         summary_data = get_empty_aggregates()
+        summary_data["all_services"] = []
+        summary_data["all_employees"] = []
         variance_data = {
             "top_overutilized": [],
             "top_underutilized": [],
@@ -151,27 +217,23 @@ def dashboard_view(request: Request, report_id: Optional[int] = None):
         name="dashboard.html",
         context={
             "active_page": "dashboard",
-            "user": user,
             "report_id": active_report_id,
             "aggregates": summary_data,
             "variance_data": variance_data,
             "ai_insights": ai_insights,
-            "files_count": files_count
+            "files_count": files_count,
+            "active_filters": active_filters
         }
     )
 
 
 @app.get("/upload", response_class=HTMLResponse)
 def upload_view(request: Request, error: Optional[str] = None):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
     return templates.TemplateResponse(
         request=request,
         name="upload.html",
         context={
             "active_page": "upload",
-            "user": user,
             "error_msg": error
         }
     )
@@ -183,31 +245,47 @@ async def handle_upload(
     files: List[UploadFile] = File(...),
     cadence: str = Form("weekly")
 ):
-    """Processes uploaded sheet(s) and automatically compiles utilization report."""
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
-
+    """Processes uploaded Excel/CSV sheet(s) and automatically compiles utilization report."""
     valid_files = [f for f in files if f.filename and f.filename.strip()]
-
     if not valid_files:
         return RedirectResponse("/upload?error=Please+select+at+least+one+valid+file", status_code=303)
 
     session_id = str(uuid.uuid4())
-    session_dir = os.path.join(UPLOAD_TMP_DIR, session_id)
-    os.makedirs(session_dir, exist_ok=True)
-
     loaded_dfs: List[pd.DataFrame] = []
     files_meta: List[Dict[str, Any]] = []
 
     for f in valid_files:
-        saved_path = os.path.join(session_dir, f.filename)
         file_bytes = await f.read()
-        with open(saved_path, "wb") as out_f:
-            out_f.write(file_bytes)
 
+        # Check if pre-consolidated 4-sheet report workbook was uploaded
+        if is_consolidated_report_file(file_bytes, f.filename):
+            try:
+                aggregates, variance_data = parse_consolidated_report(file_bytes, f.filename)
+                ai_insights = generate_ai_insights(aggregates, variance_data)
+                meta = {
+                    "filename": f.filename,
+                    "row_count": aggregates.get("total_tasks", 0),
+                    "detected_employee": "Consolidated Report",
+                    "date_range": aggregates.get("period_label", "August 2026"),
+                    "columns": ["Consolidated Workbook"]
+                }
+                report_id = save_session_data(
+                    session_id=session_id,
+                    uploads_info=[meta],
+                    normalized_df=pd.DataFrame(),
+                    norm_log=[],
+                    aggregates=aggregates,
+                    variance_data=variance_data,
+                    ai_insights=ai_insights,
+                    cadence=cadence
+                )
+                return RedirectResponse(f"/dashboard?report_id={report_id}", status_code=303)
+            except Exception as e:
+                return RedirectResponse(f"/upload?error=Error+parsing+report+{f.filename}:+{str(e)}", status_code=303)
+
+        # Standard raw task timesheet processing (single or multiple employees)
         try:
-            df = read_file_to_dataframe(saved_path, f.filename)
+            df = read_file_to_dataframe(file_bytes, f.filename)
             preview = extract_file_preview(df, f.filename)
             files_meta.append(preview)
 
@@ -219,30 +297,15 @@ async def handle_upload(
         except Exception as e:
             return RedirectResponse(f"/upload?error=Error+reading+{f.filename}:+{str(e)}", status_code=303)
 
+    if not loaded_dfs:
+        return RedirectResponse("/upload?error=No+valid+data+could+be+read", status_code=303)
+
     combined_df = pd.concat(loaded_dfs, ignore_index=True)
     normalized_df, norm_log, _ = run_normalization_pipeline(combined_df)
 
     aggregates = calculate_aggregates(normalized_df)
     variance_data = analyze_variances(aggregates, overload_threshold_pct=100.0)
     ai_insights = generate_ai_insights(aggregates, variance_data)
-
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    excel_filename = f"Resource_Utilization_Report_{timestamp}.xlsx"
-    pdf_filename = f"Resource_Utilization_Report_{timestamp}.pdf"
-    excel_path = os.path.join(EXCEL_DIR, excel_filename)
-    pdf_path = os.path.join(PDF_DIR, pdf_filename)
-
-    # Permanently save uploaded input files to data/uploads/
-    for f_uploaded, saved_tmp_path in zip(valid_files, [os.path.join(session_dir, f.filename) for f in valid_files]):
-        dest = os.path.join(UPLOADS_DIR, f"{timestamp}_{f_uploaded.filename}")
-        try:
-            if os.path.exists(os.path.join(session_dir, f_uploaded.filename)):
-                shutil.copy2(os.path.join(session_dir, f_uploaded.filename), dest)
-        except Exception:
-            pass
-
-    create_styled_workbook(aggregates, variance_data, excel_path)
-    generate_pdf_report(aggregates, variance_data, ai_insights, pdf_path)
 
     report_id = save_session_data(
         session_id=session_id,
@@ -252,8 +315,6 @@ async def handle_upload(
         aggregates=aggregates,
         variance_data=variance_data,
         ai_insights=ai_insights,
-        excel_path=excel_path,
-        pdf_path=pdf_path,
         cadence=cadence
     )
 
@@ -263,36 +324,24 @@ async def handle_upload(
 @app.get("/load-demo")
 def load_demo_dataset(request: Request):
     """Manual one-click demo loader using the August 2026 reference file."""
-    if not get_current_user(request):
-        return RedirectResponse("/login", status_code=303)
-
-    demo_file = os.path.join(BASE_DIR, "TaskStatus-202608(Input File).csv")
+    demo_file = os.path.join(BASE_DIR, "TaskStatus-202608(Input File).xlsx")
+    if not os.path.exists(demo_file):
+        demo_file = os.path.join(BASE_DIR, "TaskStatus-202608(Input File).csv")
     if not os.path.exists(demo_file):
         return RedirectResponse("/upload?error=Demo+file+not+found", status_code=303)
 
     session_id = str(uuid.uuid4())
-    df_raw = read_file_to_dataframe(demo_file, "TaskStatus-202608(Input File).csv")
-    preview = extract_file_preview(df_raw, "TaskStatus-202608(Input File).csv")
+    filename = os.path.basename(demo_file)
+    with open(demo_file, "rb") as f:
+        file_bytes = f.read()
+
+    df_raw = read_file_to_dataframe(file_bytes, filename)
+    preview = extract_file_preview(df_raw, filename)
     mapped_df, _, _ = map_dataframe_to_schema(df_raw)
     normalized_df, norm_log, _ = run_normalization_pipeline(mapped_df)
     aggregates = calculate_aggregates(normalized_df)
     variance_data = analyze_variances(aggregates, overload_threshold_pct=100.0)
     ai_insights = generate_ai_insights(aggregates, variance_data)
-
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    excel_filename = f"Resource_Utilization_Report_{timestamp}.xlsx"
-    pdf_filename = f"Resource_Utilization_Report_{timestamp}.pdf"
-    excel_path = os.path.join(EXCEL_DIR, excel_filename)
-    pdf_path = os.path.join(PDF_DIR, pdf_filename)
-
-    # Permanently save demo input file to data/uploads/
-    try:
-        shutil.copy2(demo_file, os.path.join(UPLOADS_DIR, f"{timestamp}_TaskStatus-202608(Input File).csv"))
-    except Exception:
-        pass
-
-    create_styled_workbook(aggregates, variance_data, excel_path)
-    generate_pdf_report(aggregates, variance_data, ai_insights, pdf_path)
 
     report_id = save_session_data(
         session_id=session_id,
@@ -302,20 +351,56 @@ def load_demo_dataset(request: Request):
         aggregates=aggregates,
         variance_data=variance_data,
         ai_insights=ai_insights,
-        excel_path=excel_path,
-        pdf_path=pdf_path,
         cadence="consolidated"
     )
 
     return RedirectResponse(f"/dashboard?report_id={report_id}", status_code=303)
 
 
+
+@app.get("/api/tasks")
+def get_tasks_endpoint(
+    report_id: int,
+    employee: Optional[str] = None,
+    service: Optional[str] = None,
+    task_type: Optional[str] = None,
+    week: Optional[str] = None,
+    status: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    search: Optional[str] = None,
+    anomaly_type: Optional[str] = None,
+    limit: int = 5000
+):
+    """Granular task drill-down API for interactive dashboard inspection."""
+    tasks = get_report_tasks(
+        report_id=report_id,
+        employee=employee,
+        service=service,
+        task_type=task_type,
+        week=week,
+        status=status,
+        from_date=from_date,
+        to_date=to_date,
+        search=search,
+        anomaly_type=anomaly_type,
+        limit=limit
+    )
+    total_expected = round(sum(t.get("expected_hrs", 0.0) for t in tasks), 2)
+    total_actual = round(sum(t.get("actual_hrs", 0.0) for t in tasks), 2)
+    total_variance = round(total_actual - total_expected, 2)
+    return {
+        "report_id": report_id,
+        "count": len(tasks),
+        "total_expected_hrs": total_expected,
+        "total_actual_hrs": total_actual,
+        "total_variance": total_variance,
+        "tasks": tasks
+    }
+
 @app.post("/api/regenerate-ai")
 def regenerate_ai_endpoint(request: Request, report_id: int = Form(...), gemini_api_key: str = Form(...)):
     """Regenerates AI insights using provided Gemini API Key."""
-    if not get_current_user(request):
-        return RedirectResponse("/login", status_code=303)
-
     report = get_report_by_id(report_id)
     if not report:
         raise HTTPException(status_code=404, detail="Report not found.")
@@ -324,93 +409,84 @@ def regenerate_ai_endpoint(request: Request, report_id: int = Form(...), gemini_
     variance_data = report["variance"]
     ai_insights = generate_ai_insights(aggregates, variance_data, api_key=gemini_api_key.strip())
 
-    from modules.db import db_mgr
-    conn = db_mgr.get_raw_connection()
-    try:
-        import json
-        cursor = conn.cursor()
-        cursor.execute("UPDATE reports SET ai_insights_json = ? WHERE id = ?", (json.dumps(ai_insights), report_id))
-        conn.commit()
-    finally:
-        conn.close()
+    update_report_ai_insights(report_id, ai_insights)
 
     return RedirectResponse(f"/dashboard?report_id={report_id}", status_code=303)
 
 
-# ─── AUTHENTICATION ROUTES ─────────────────────────────────────────
+# ─── AI COPILOT CHATBOT ENDPOINTS ──────────────────────────────────
 
-@app.get("/login", response_class=HTMLResponse)
-def login_view(request: Request, error: Optional[str] = None):
-    return templates.TemplateResponse(request=request, name="login.html", context={"active_page": "login", "error": error})
+class ChatRequest(BaseModel):
+    report_id: int
+    message: str
+    api_key: Optional[str] = None
+    history: Optional[List[Dict[str, str]]] = None
 
-@app.post("/login")
-def login_action(response: Response, email: str = Form(...), password: str = Form(...)):
-    user = authenticate_user(email, password)
-    if not user:
-        return RedirectResponse("/login?error=Invalid+credentials", status_code=303)
-    session_token = create_session(user["id"])
-    res = RedirectResponse("/dashboard", status_code=303)
-    res.set_cookie(key="session_id", value=session_token, httponly=True, samesite="lax")
-    return res
 
-@app.get("/logout")
-def logout_action(request: Request, response: Response):
-    session_id = request.cookies.get("session_id")
-    if session_id:
-        delete_session(session_id)
-    res = RedirectResponse("/login", status_code=303)
-    res.delete_cookie("session_id")
-    return res
+@app.post("/api/chat")
+async def chat_endpoint(req: ChatRequest):
+    """Processes conversational natural language questions about timesheet data."""
+    report = None
+    if req.report_id > 0:
+        report = get_report_by_id(req.report_id)
+    if not report:
+        report = get_latest_report()
 
-@app.get("/register", response_class=HTMLResponse)
-def register_view(request: Request, error: Optional[str] = None):
-    return templates.TemplateResponse(request=request, name="register.html", context={"active_page": "register", "error": error})
+    summary = report["summary"] if report else get_empty_aggregates()
+    result = await ask_gemini_copilot(
+        user_query=req.message,
+        report_summary=summary,
+        report_id=req.report_id,
+        api_key=req.api_key,
+        history=req.history
+    )
+    return result
 
-@app.post("/register")
-def register_action(name: str = Form(...), email: str = Form(...), password: str = Form(...), role: str = Form(...)):
-    if role not in ["TL", "PM"]:
-        return RedirectResponse("/register?error=Invalid+role", status_code=303)
-    existing = get_user_by_email(email)
-    if existing:
-        return RedirectResponse("/register?error=Email+already+exists", status_code=303)
-    create_user(email, name, password, role)
-    return RedirectResponse("/login", status_code=303)
 
-@app.get("/team", response_class=HTMLResponse)
-def team_view(request: Request, error: Optional[str] = None, success: Optional[str] = None):
-    user = get_current_user(request)
-    if not user or user["role"] not in ["TL", "PM"]:
-        return RedirectResponse("/login", status_code=303)
-    members = get_team_members(user["id"])
-    return templates.TemplateResponse(request=request, name="team.html", context={
-        "active_page": "team", "user": user, "members": members, "error": error, "success": success
-    })
+class SaveKeyRequest(BaseModel):
+    api_key: str
 
-@app.post("/team")
-def team_add_action(request: Request, name: str = Form(...), email: str = Form(...), password: str = Form(...)):
-    user = get_current_user(request)
-    if not user or user["role"] not in ["TL", "PM"]:
-        return RedirectResponse("/login", status_code=303)
-    existing = get_user_by_email(email)
-    if existing:
-        return RedirectResponse("/team?error=Email+already+exists", status_code=303)
-    create_user(email, name, password, "MEMBER", manager_id=user["id"])
-    return RedirectResponse("/team?success=Member+added+successfully", status_code=303)
+
+@app.post("/api/save-gemini-key")
+def save_gemini_key_endpoint(req: SaveKeyRequest):
+    """Saves user's Gemini API Key in runtime environment and persists to .env."""
+    clean_key = req.api_key.strip()
+    if clean_key:
+        os.environ["GEMINI_API_KEY"] = clean_key
+        env_path = os.path.join(BASE_DIR, ".env")
+        try:
+            lines = []
+            if os.path.exists(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            updated = False
+            new_lines = []
+            for line in lines:
+                if line.startswith("GEMINI_API_KEY="):
+                    new_lines.append(f"GEMINI_API_KEY={clean_key}\n")
+                    updated = True
+                else:
+                    new_lines.append(line)
+            if not updated:
+                new_lines.append(f"GEMINI_API_KEY={clean_key}\n")
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+        except Exception:
+            pass
+        return {"status": "ok", "message": "Gemini API Key successfully saved and active!"}
+    return {"status": "error", "message": "API Key cannot be blank."}
+
 
 # ─── TRENDS & REPORTS ──────────────────────────────────────────────
 
 @app.get("/trends", response_class=HTMLResponse)
 def trends_view(request: Request):
-    user = get_current_user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
     reports = get_all_reports()
     return templates.TemplateResponse(
         request=request,
         name="trends.html",
         context={
             "active_page": "trends",
-            "user": user,
             "reports": reports
         }
     )
@@ -419,34 +495,22 @@ def trends_view(request: Request):
 @app.post("/reset-db")
 def reset_db_endpoint(request: Request):
     """Fully clears database and returns to zero-state dashboard."""
-    if not get_current_user(request):
-        return RedirectResponse("/login", status_code=303)
     clear_all_data()
     return RedirectResponse("/dashboard", status_code=303)
 
 
 @app.get("/export/excel/{report_id}")
 def export_excel_download(request: Request, report_id: int):
-    if not get_current_user(request):
-        return RedirectResponse("/login", status_code=303)
+    """Generates the 4-sheet Excel report entirely in memory and streams it directly."""
     if report_id <= 0:
         raise HTTPException(status_code=400, detail="No active report available to export. Please upload a timesheet first.")
     report = get_report_by_id(report_id)
     if not report:
         raise HTTPException(status_code=404, detail="Excel export not found.")
 
-    excel_path = report.get("excel_path")
-    if not excel_path:
-        excel_path = os.path.join(OUTPUT_DIR, f"Resource_Utilization_Report_{report_id}.xlsx")
+    file_bytes = create_styled_workbook(report["summary"], report["variance"], output_path=None)
+    filename = f"Resource_Utilization_Report_{report_id}.xlsx"
 
-    with EXPORT_LOCK:
-        if not os.path.exists(excel_path) or os.path.getsize(excel_path) < 10000:
-            create_styled_workbook(report["summary"], report["variance"], excel_path)
-
-        with open(excel_path, "rb") as f:
-            file_bytes = f.read()
-
-    filename = os.path.basename(excel_path)
     return Response(
         content=file_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -456,22 +520,21 @@ def export_excel_download(request: Request, report_id: int):
 
 @app.get("/export/pdf/{report_id}")
 def export_pdf_download(request: Request, report_id: int):
-    if not get_current_user(request):
-        return RedirectResponse("/login", status_code=303)
+    """Generates the executive PDF report entirely in memory and streams it directly."""
     if report_id <= 0:
         raise HTTPException(status_code=400, detail="No active report available to export. Please upload a timesheet first.")
     report = get_report_by_id(report_id)
     if not report:
         raise HTTPException(status_code=404, detail="PDF export not found.")
 
-    pdf_path = report.get("pdf_path")
-    if not pdf_path or not os.path.exists(pdf_path):
-        raise HTTPException(status_code=404, detail="PDF export not found.")
+    pdf_bytes = generate_pdf_report(
+        report["summary"],
+        report["variance"],
+        report.get("ai_insights", {}),
+        output_path=None
+    )
+    filename = f"Resource_Utilization_Report_{report_id}.pdf"
 
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
-
-    filename = os.path.basename(pdf_path)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

@@ -18,22 +18,23 @@ Generates the comprehensive 4-sheet Resource Utilization Report matching the ref
 """
 
 from __future__ import annotations
+import io
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-
 def create_styled_workbook(
     aggregates: Dict[str, Any],
     variance_data: Dict[str, Any],
-    output_path: str
-) -> str:
+    output_path: Optional[Union[str, io.BytesIO]] = None
+) -> Union[str, bytes]:
     """
     Builds the complete 4-sheet Excel workbook matching reference report specifications.
-    Saves it to output_path and returns the absolute path.
+    If output_path is provided as a string, saves to file and returns absolute path.
+    If output_path is None, returns workbook as bytes.
     """
     wb = openpyxl.Workbook()
     wb.remove(wb.active)  # Remove default sheet
@@ -614,9 +615,17 @@ def create_styled_workbook(
     ws4.column_dimensions["D"].width = 22
     ws4.column_dimensions["E"].width = 45
 
-    # Save to disk
-    out_dir = os.path.dirname(output_path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-    wb.save(output_path)
-    return os.path.abspath(output_path)
+    if output_path is None:
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.getvalue()
+    elif hasattr(output_path, "write"):
+        wb.save(output_path)
+        return output_path
+    else:
+        out_dir = os.path.dirname(output_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        wb.save(output_path)
+        return os.path.abspath(output_path)

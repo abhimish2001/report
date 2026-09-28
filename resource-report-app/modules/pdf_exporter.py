@@ -8,30 +8,35 @@ Generates a polished, multi-page executive PDF report using ReportLab:
 - Overload & Attention Points
 """
 
-from __future__ import annotations
+import io
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import inch
-from reportlab.platypus import HRFlowable, KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
 def generate_pdf_report(
     aggregates: Dict[str, Any],
     variance_data: Dict[str, Any],
     ai_insights: Dict[str, Any],
-    output_path: str
-) -> str:
+    output_path: Optional[Union[str, io.BytesIO]] = None
+) -> Union[str, bytes]:
     """
     Renders the executive report to a professional PDF file using ReportLab.
+    If output_path is None, returns bytes.
     """
-    out_dir = os.path.dirname(output_path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
+    target = output_path
+    if target is None:
+        target = io.BytesIO()
+    elif isinstance(target, str):
+        out_dir = os.path.dirname(target)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
     doc = SimpleDocTemplate(
-        output_path,
+        target,
         pagesize=letter,
         leftMargin=36,
         rightMargin=36,
@@ -279,4 +284,10 @@ def generate_pdf_report(
 
     # Build PDF
     doc.build(story)
-    return os.path.abspath(output_path)
+    if output_path is None and isinstance(target, io.BytesIO):
+        target.seek(0)
+        return target.getvalue()
+    elif hasattr(output_path, "write"):
+        return output_path
+    else:
+        return os.path.abspath(output_path)

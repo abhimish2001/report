@@ -6,7 +6,7 @@ Surfaces top attention areas and generates governance highlights matching refere
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def analyze_variances(

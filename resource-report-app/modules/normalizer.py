@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 import pandas as pd
-import numpy as np
 
 try:
     from rapidfuzz import fuzz
@@ -251,6 +250,39 @@ def parse_numeric_hours(val: Any) -> Optional[float]:
     return None
 
 
+def normalize_employee_name(name: Any) -> str:
+    """
+    Standardizes employee names for the pipeline (see run_normalization_pipeline).
+    Title-cases each word but leaves ALL-CAPS tokens untouched; blank/null becomes
+    'Unknown'.
+    """
+    clean = normalize_text_clean(name)
+    if not clean:
+        return "Unknown"
+    words = clean.split()
+    return " ".join([w.capitalize() if not w.isupper() else w for w in words])
+
+
+def normalize_service_name(service: Any) -> str:
+    """Convenience helper to normalize a single entity/service name."""
+    clean = normalize_text_clean(service)
+    if not clean:
+        return "General"
+    low = clean.lower()
+    for acr_raw, acr_norm in COMMON_ACRONYM_MAP.items():
+        if acr_raw in low:
+            return acr_norm
+    return clean.title()
+
+
+def normalize_work_type(task_type: Any) -> str:
+    """Convenience helper to normalize a work type against synonyms."""
+    clean = normalize_text_clean(task_type)
+    if not clean:
+        return "Other"
+    return DEFAULT_TASK_TYPE_SYNONYMS.get(clean.lower(), clean.title())
+
+
 def run_normalization_pipeline(
     df: pd.DataFrame,
     manager_overrides: Optional[Dict[str, Dict[str, str]]] = None,
@@ -425,37 +457,4 @@ def run_normalization_pipeline(
 
     normalization_log.sort(key=lambda x: (x["field_name"], -x["row_count_affected"]))
     return normalized_df, normalization_log, flagged_rows
-
-
-def normalize_employee_name(name: Any) -> str:
-    """
-    Standardizes employee names for the pipeline (see run_normalization_pipeline).
-    Title-cases each word but leaves ALL-CAPS tokens untouched; blank/null becomes
-    'Unknown'.
-    """
-    clean = normalize_text_clean(name)
-    if not clean:
-        return "Unknown"
-    words = clean.split()
-    return " ".join([w.capitalize() if not w.isupper() else w for w in words])
-
-
-def normalize_service_name(service: Any) -> str:
-    """Convenience helper to normalize a single entity/service name."""
-    clean = normalize_text_clean(service)
-    if not clean:
-        return "General"
-    low = clean.lower()
-    for acr_raw, acr_norm in COMMON_ACRONYM_MAP.items():
-        if acr_raw in low:
-            return acr_norm
-    return clean.title()
-
-
-def normalize_work_type(task_type: Any) -> str:
-    """Convenience helper to normalize a work type against synonyms."""
-    clean = normalize_text_clean(task_type)
-    if not clean:
-        return "Other"
-    return DEFAULT_TASK_TYPE_SYNONYMS.get(clean.lower(), clean.title())
 
