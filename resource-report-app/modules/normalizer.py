@@ -161,20 +161,6 @@ def cluster_similar_terms(
     return cluster_map
 
 
-def normalize_employee_name(raw_name: str) -> str:
-    """
-    Standardizes employee names to Title Case while handling special capitalizations.
-    e.g. 'amit Sondhiya' -> 'Amit Sondhiya'
-    """
-    cleaned = normalize_text_clean(raw_name)
-    if not cleaned or cleaned.lower() in ['nan', 'none', 'null', '']:
-        return "Unassigned"
-
-    parts = cleaned.split(' ')
-    fixed_parts = [p.capitalize() for p in parts if p]
-    return " ".join(fixed_parts)
-
-
 def normalize_entity_name(raw_entity: str) -> str:
     """
     Standardizes entity (Service, Client, Project, Department, University).
@@ -442,11 +428,14 @@ def run_normalization_pipeline(
 
 
 def normalize_employee_name(name: Any) -> str:
-    """Convenience helper to normalize a single employee name."""
+    """
+    Standardizes employee names for the pipeline (see run_normalization_pipeline).
+    Title-cases each word but leaves ALL-CAPS tokens untouched; blank/null becomes
+    'Unknown'.
+    """
     clean = normalize_text_clean(name)
     if not clean:
         return "Unknown"
-    # Title-case each word preserving initials
     words = clean.split()
     return " ".join([w.capitalize() if not w.isupper() else w for w in words])
 

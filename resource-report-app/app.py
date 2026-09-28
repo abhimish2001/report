@@ -2,12 +2,12 @@
 app.py
 FastAPI application entrypoint for the Team Resource Utilization Reporting System.
 Key Features:
-- Direct, open access without login/admin barriers
+- Cookie-session authentication with TL / PM / MEMBER roles
 - Multi-cadence timesheet ingestion (Daily, Weekly, Monthly, Consolidated)
 - Zero-baseline initial static dashboard KPIs (0 tasks, 0.0 hrs, 0.0% util)
 - Automated report generation styled after Sample-1.html and Sample-2.html
 - Gemini AI executive insights and management action synthesis
-- Microsoft SQL Server primary database with resilient SQLite fallback
+- Microsoft SQL Server only (no SQLite fallback)
 - 4-Sheet Excel and Executive PDF exports
 """
 
@@ -261,8 +261,11 @@ async def handle_upload(
 
 
 @app.get("/load-demo")
-def load_demo_dataset():
+def load_demo_dataset(request: Request):
     """Manual one-click demo loader using the August 2026 reference file."""
+    if not get_current_user(request):
+        return RedirectResponse("/login", status_code=303)
+
     demo_file = os.path.join(BASE_DIR, "TaskStatus-202608(Input File).csv")
     if not os.path.exists(demo_file):
         return RedirectResponse("/upload?error=Demo+file+not+found", status_code=303)
@@ -308,8 +311,11 @@ def load_demo_dataset():
 
 
 @app.post("/api/regenerate-ai")
-def regenerate_ai_endpoint(report_id: int = Form(...), gemini_api_key: str = Form(...)):
+def regenerate_ai_endpoint(request: Request, report_id: int = Form(...), gemini_api_key: str = Form(...)):
     """Regenerates AI insights using provided Gemini API Key."""
+    if not get_current_user(request):
+        return RedirectResponse("/login", status_code=303)
+
     report = get_report_by_id(report_id)
     if not report:
         raise HTTPException(status_code=404, detail="Report not found.")
@@ -344,7 +350,7 @@ def login_action(response: Response, email: str = Form(...), password: str = For
         return RedirectResponse("/login?error=Invalid+credentials", status_code=303)
     session_token = create_session(user["id"])
     res = RedirectResponse("/dashboard", status_code=303)
-    res.set_cookie(key="session_id", value=session_token, httponly=True)
+    res.set_cookie(key="session_id", value=session_token, httponly=True, samesite="lax")
     return res
 
 @app.get("/logout")
@@ -411,14 +417,18 @@ def trends_view(request: Request):
 
 
 @app.post("/reset-db")
-def reset_db_endpoint():
+def reset_db_endpoint(request: Request):
     """Fully clears database and returns to zero-state dashboard."""
+    if not get_current_user(request):
+        return RedirectResponse("/login", status_code=303)
     clear_all_data()
     return RedirectResponse("/dashboard", status_code=303)
 
 
 @app.get("/export/excel/{report_id}")
-def export_excel_download(report_id: int):
+def export_excel_download(request: Request, report_id: int):
+    if not get_current_user(request):
+        return RedirectResponse("/login", status_code=303)
     if report_id <= 0:
         raise HTTPException(status_code=400, detail="No active report available to export. Please upload a timesheet first.")
     report = get_report_by_id(report_id)
@@ -445,7 +455,9 @@ def export_excel_download(report_id: int):
 
 
 @app.get("/export/pdf/{report_id}")
-def export_pdf_download(report_id: int):
+def export_pdf_download(request: Request, report_id: int):
+    if not get_current_user(request):
+        return RedirectResponse("/login", status_code=303)
     if report_id <= 0:
         raise HTTPException(status_code=400, detail="No active report available to export. Please upload a timesheet first.")
     report = get_report_by_id(report_id)
